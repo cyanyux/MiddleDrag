@@ -120,7 +120,7 @@ final class GestureModelsTests: XCTestCase {
         XCTAssertEqual(config.modifierKeyType, .shift)
 
         // Contact size filter defaults
-        XCTAssertFalse(config.contactSizeFilterEnabled)
+        XCTAssertTrue(config.contactSizeFilterEnabled)
         XCTAssertEqual(config.maxContactSize, 1.5, accuracy: 0.001)
     }
 
@@ -136,7 +136,7 @@ final class GestureModelsTests: XCTestCase {
         XCTAssertEqual(prefs.modifierKeyType, .shift)
 
         // Contact size filter defaults
-        XCTAssertFalse(prefs.contactSizeFilterEnabled)
+        XCTAssertTrue(prefs.contactSizeFilterEnabled)
         XCTAssertEqual(prefs.maxContactSize, 1.5, accuracy: 0.001)
     }
 

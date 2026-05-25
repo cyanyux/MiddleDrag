@@ -26,6 +26,7 @@ class GestureRecognizer {
     // Stability tracking - prevents false gesture ends during brief state transitions
     private var stableFrameCount: Int = 0
     private var validGestureFrameCount: Int = 0
+    private var pendingGestureEndTime: Double?
 
     // Cooldown after 4-finger cancellation
     // Prevents accidental gesture triggers when lifting one finger during Mission Control
@@ -66,14 +67,17 @@ class GestureRecognizer {
             }
         }
 
+        let activeFingerCount = unsafe Self.activeFingerCount(from: touches, count: count)
         let validFingers = unsafe Self.validFingerPositions(
             from: touches, count: count, configuration: configuration)
 
         let fingerCount = validFingers.count
 
-        // ALWAYS cancel on 4+ fingers regardless of configuration
+        // ALWAYS cancel on 4+ raw active contacts regardless of configuration.
         // This ensures Mission Control and other system gestures always work
-        if fingerCount >= 4 {
+        // and prevents filtered/palm contacts from turning a 4+ contact frame into
+        // an accidental three-finger middle click.
+        if activeFingerCount >= 4 {
             if state != .idle {
                 handleGestureCancel()
             }
@@ -82,9 +86,10 @@ class GestureRecognizer {
             return
         }
 
-        // Clear cooldown when finger count drops to 0-2,
-        // or when finger count is 3 and we're idle (so user can start a new gesture)
-        if fingerCount <= 2 || (fingerCount == 3 && state == .idle) {
+        // Clear cooldown only after fingers drop below the three-finger gesture shape.
+        // Do not clear merely because a 4+ system gesture briefly becomes 3 fingers
+        // during lift-off; that path can create accidental middle clicks.
+        if activeFingerCount <= 2 {
             isInCancellationCooldown = false
         }
 
@@ -107,9 +112,12 @@ class GestureRecognizer {
             // Gesture no longer valid for current finger count
             // (needs 3 to start, or 2+ if allowReliftDuringDrag is on during drag)
             // Use stable frame count to prevent false ends during brief transitions
+            if stableFrameCount == 0 {
+                pendingGestureEndTime = timestamp
+            }
             stableFrameCount += 1
             if stableFrameCount >= 2 {
-                handleGestureEnd(timestamp: timestamp)
+                handleGestureEnd(timestamp: pendingGestureEndTime ?? timestamp)
             }
         } else {
             validGestureFrameCount = 0
@@ -147,6 +155,22 @@ class GestureRecognizer {
         return validFingers
     }
 
+    private static func activeFingerCount(from touches: UnsafeMutableRawPointer, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+
+        let touchArray = unsafe touches.bindMemory(to: MTTouch.self, capacity: count)
+        var activeCount = 0
+
+        for i in 0..<count {
+            let touch = unsafe touchArray[i]
+            if touch.state == 3 || touch.state == 4 {
+                activeCount += 1
+            }
+        }
+
+        return activeCount
+    }
+
     /// Reset gesture recognition state
     func reset() {
         state = .idle
@@ -157,6 +181,7 @@ class GestureRecognizer {
         frameCount = 0
         stableFrameCount = 0
         validGestureFrameCount = 0
+        pendingGestureEndTime = nil
         isInCancellationCooldown = false  // Clear cooldown on reset
     }
 
@@ -164,6 +189,7 @@ class GestureRecognizer {
 
     private func handleValidGesture(fingers: [MTPoint], timestamp: Double) {
         stableFrameCount = 0
+        pendingGestureEndTime = nil
         validGestureFrameCount += 1
 
         let centroid = calculateCentroid(fingers: fingers)

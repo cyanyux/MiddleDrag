@@ -2074,6 +2074,49 @@ final class MultitouchManagerTests: XCTestCase {
             result, "Physical left click with 3 fingers should be suppressed (Force Click)")
     }
 
+    func testProcessEventDoesNotInterceptForceClickWhenTapToClickDisabled() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice }, eventTapSetup: { true })
+        let recognizer = GestureRecognizer()
+
+        var config = GestureConfiguration()
+        config.tapToClickEnabled = false
+        manager.updateConfiguration(config)
+
+        manager.currentFingerCount = 3
+        manager.currentFingerCount = 3
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0.5, y: 0.5))
+
+        let startExpectation = XCTestExpectation(description: "Gesture state active")
+        DispatchQueue.main.async {
+            XCTAssertTrue(manager.isInThreeFingerGesture)
+            startExpectation.fulfill()
+        }
+        wait(for: [startExpectation], timeout: 1.0)
+
+        let downEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let downResult = unsafe manager.processEvent(downEvent, type: .leftMouseDown)
+
+        unsafe XCTAssertNotNil(
+            downResult,
+            "Physical left mouse-down should pass through when tap-to-click is disabled, even during an active three-finger contact")
+
+        let upEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let upResult = unsafe manager.processEvent(upEvent, type: .leftMouseUp)
+
+        unsafe XCTAssertNotNil(
+            upResult,
+            "Physical left mouse-up should also pass through when the disabled tap path did not convert the mouse-down")
+    }
+
     func testProcessEventDoesNotInterceptTransientThreeFingerForceClick() throws {
         try requireCGEventTestsEnabled()
         let mockDevice = unsafe MockDeviceMonitor()

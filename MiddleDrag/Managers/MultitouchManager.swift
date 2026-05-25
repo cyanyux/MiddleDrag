@@ -793,6 +793,7 @@ public final class MultitouchManager: @unchecked Sendable {
         let canConvertForceClick =
             hasStableThreeFingerContact
             && modifierKeyHeld
+            && configuration.tapToClickEnabled
             && isLeftButton
             && !isOurEvent
             && !isActivelyDragging
@@ -816,11 +817,20 @@ public final class MultitouchManager: @unchecked Sendable {
             }
         }
 
+        let shouldPassThroughDisabledTapLeftClick =
+            isLeftButton
+            && !isOurEvent
+            && !configuration.tapToClickEnabled
+            && !isActivelyDragging
+            && !forceClickConversionActive
+
         // Suppress left/right events during gesture or shortly after
         // Only suppress after gesture end if the last gesture was actually active (not cancelled)
+        let suppressionState = mouseSuppressionState(at: now)
         let shouldSuppress =
-            gestureActive
-            || isNativeMouseSuppressionActive(at: now)
+            (gestureActive && !shouldPassThroughDisabledTapLeftClick)
+            || (suppressionState.gestureStart && !shouldPassThroughDisabledTapLeftClick)
+            || suppressionState.generatedMiddleClick
             || (timeSinceGestureEnd < 0.15 && lastGestureWasActive)
 
         if shouldSuppress && !isMiddleButton {
@@ -874,10 +884,19 @@ public final class MultitouchManager: @unchecked Sendable {
     }
 
     private func isNativeMouseSuppressionActive(at timestamp: TimeInterval) -> Bool {
+        let state = mouseSuppressionState(at: timestamp)
+        return state.generatedMiddleClick || state.gestureStart
+    }
+
+    private func mouseSuppressionState(at timestamp: TimeInterval) -> (
+        generatedMiddleClick: Bool, gestureStart: Bool
+    ) {
         nativeMouseSuppressionLock.lock()
         defer { nativeMouseSuppressionLock.unlock() }
-        return timestamp < nativeMouseSuppressionUntil
-            || timestamp < gestureStartMouseSuppressionUntil
+        return (
+            generatedMiddleClick: timestamp < nativeMouseSuppressionUntil,
+            gestureStart: timestamp < gestureStartMouseSuppressionUntil
+        )
     }
 
     private func clearGestureStartMouseSuppression() {

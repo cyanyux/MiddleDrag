@@ -48,7 +48,7 @@ final class PreferencesManagerTests: XCTestCase {
         XCTAssertEqual(prefs.exclusionZoneSize, 0.15, accuracy: 0.001)
         XCTAssertFalse(prefs.requireModifierKey)
         XCTAssertEqual(prefs.modifierKeyType, .shift)
-        XCTAssertFalse(prefs.contactSizeFilterEnabled)
+        XCTAssertTrue(prefs.contactSizeFilterEnabled)
         XCTAssertEqual(prefs.maxContactSize, 1.5, accuracy: 0.001)
     }
 

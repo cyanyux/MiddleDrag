@@ -65,7 +65,7 @@ public struct GestureConfiguration: Sendable {
     var modifierKeyType: ModifierKeyType = .shift
 
     // Palm rejection - Contact size filter
-    var contactSizeFilterEnabled: Bool = false
+    var contactSizeFilterEnabled: Bool = true
     var maxContactSize: Float = 1.5  // Maximum zTotal value to include (larger = palm)
 
     // Window size filter - ignore small windows (menus, popups)
@@ -240,7 +240,7 @@ public struct UserPreferences: Codable, Sendable {
     var modifierKeyType: ModifierKeyType = .shift
 
     // Palm rejection - Contact size filter
-    var contactSizeFilterEnabled: Bool = false
+    var contactSizeFilterEnabled: Bool = true
     var maxContactSize: Double = 1.5  // Maximum contact size to include
 
     // Window size filter - ignore small windows

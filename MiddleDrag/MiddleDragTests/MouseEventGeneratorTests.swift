@@ -1105,6 +1105,38 @@ final class MouseEventGeneratorTests: XCTestCase {
         
         generator.endDrag()
     }
+
+    func testSubThresholdDragDeltasAccumulateUntilThreshold() {
+        generator.smoothingFactor = 0
+        generator.minimumMovementThreshold = 0.5
+
+        generator.startDrag(at: CGPoint(x: 100, y: 100))
+
+        let startExp = XCTestExpectation(description: "Drag started")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            startExp.fulfill()
+        }
+        wait(for: [startExp], timeout: 0.5)
+
+        let safeOrigin = CGPoint(x: 500, y: 500)
+        generator.lastDragPosition = safeOrigin
+
+        generator.updateDrag(deltaX: 0.2, deltaY: 0)
+        generator.updateDrag(deltaX: 0.2, deltaY: 0)
+
+        XCTAssertEqual(
+            generator.lastDragPosition.x, safeOrigin.x, accuracy: 0.01,
+            "Position should not emit before accumulated movement reaches threshold")
+
+        generator.updateDrag(deltaX: 0.2, deltaY: 0)
+
+        XCTAssertEqual(
+            generator.lastDragPosition.x, safeOrigin.x + 0.6, accuracy: 0.01,
+            "Sub-threshold horizontal movement should accumulate into visible drag motion")
+        XCTAssertEqual(generator.lastDragPosition.y, safeOrigin.y, accuracy: 0.01)
+
+        generator.endDrag()
+    }
     
     func testLastDragPositionResetsOnNewDrag() {
         generator.smoothingFactor = 0

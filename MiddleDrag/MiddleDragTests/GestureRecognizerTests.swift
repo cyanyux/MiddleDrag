@@ -299,11 +299,12 @@ final class GestureRecognizerTests: XCTestCase {
 
     // MARK: - Partial Filter Tests (Some touches filtered, some pass)
 
-    func testExclusionZone_PartialFiltering_FiveTouchesThreePass() {
+    func testExclusionZone_PartialFiltering_FiveTouchesThreePassDoesNotStartFromRawFourPlus() {
         recognizer.configuration.exclusionZoneEnabled = true
         recognizer.configuration.exclusionZoneSize = 0.2  // Bottom 20%
 
-        // 5 touches: 2 in exclusion zone, 3 above - should activate gesture
+        // 5 raw touches with only 3 above the exclusion zone must still be blocked.
+        // Raw 4+ contact frames are treated as system gesture / palm-unsafe.
         let touches = [
             createTouch(x: 0.2, y: 0.1),  // Filtered (y < 0.2)
             createTouch(x: 0.3, y: 0.5),  // Passes
@@ -316,16 +317,17 @@ final class GestureRecognizerTests: XCTestCase {
 
         unsafe recognizer.processTouches(pointer, count: count, timestamp: 0.0, modifierFlags: [])
 
-        XCTAssertTrue(
+        XCTAssertFalse(
             mockDelegate.didStartCalled,
-            "Gesture should start when 5 touches detected but only 3 pass exclusion zone filter")
+            "Raw 4+ contact frames should not become middle-click candidates")
     }
 
-    func testContactSizeFilter_PartialFiltering_FiveTouchesThreePass() {
+    func testContactSizeFilter_PartialFiltering_FiveTouchesThreePassDoesNotStartFromRawFourPlus() {
         recognizer.configuration.contactSizeFilterEnabled = true
         recognizer.configuration.maxContactSize = 1.5
 
-        // 5 touches: 2 too large (palm), 3 normal - should activate gesture
+        // 5 raw touches with 3 normal-sized contacts must still be blocked.
+        // This favors false-positive prevention over guessing that the extras are palms.
         let touches = [
             createTouch(x: 0.2, y: 0.5, zTotal: 3.0),  // Filtered (too large)
             createTouch(x: 0.3, y: 0.5, zTotal: 0.5),  // Passes
@@ -338,18 +340,18 @@ final class GestureRecognizerTests: XCTestCase {
 
         unsafe recognizer.processTouches(pointer, count: count, timestamp: 0.0, modifierFlags: [])
 
-        XCTAssertTrue(
+        XCTAssertFalse(
             mockDelegate.didStartCalled,
-            "Gesture should start when 5 touches detected but only 3 pass contact size filter")
+            "Raw 4+ contact frames should not become middle-click candidates")
     }
 
-    func testCombinedFilters_PartialFiltering_SixTouchesThreePass() {
+    func testCombinedFilters_PartialFiltering_SixTouchesThreePassDoesNotStartFromRawFourPlus() {
         recognizer.configuration.exclusionZoneEnabled = true
         recognizer.configuration.exclusionZoneSize = 0.2
         recognizer.configuration.contactSizeFilterEnabled = true
         recognizer.configuration.maxContactSize = 1.5
 
-        // 6 touches: 2 in exclusion zone, 1 too large, 3 pass both - should activate
+        // 6 raw touches with 3 passing all filters must still be blocked.
         let touches = [
             createTouch(x: 0.1, y: 0.1, zTotal: 0.5),  // Filtered (exclusion zone)
             createTouch(x: 0.2, y: 0.5, zTotal: 3.0),  // Filtered (too large)
@@ -363,9 +365,9 @@ final class GestureRecognizerTests: XCTestCase {
 
         unsafe recognizer.processTouches(pointer, count: count, timestamp: 0.0, modifierFlags: [])
 
-        XCTAssertTrue(
+        XCTAssertFalse(
             mockDelegate.didStartCalled,
-            "Gesture should start when 6 touches detected but only 3 pass all filters")
+            "Raw 4+ contact frames should not become middle-click candidates")
     }
 
     func testPartialFiltering_InsufficientRemainingTouches() {
@@ -532,6 +534,33 @@ final class GestureRecognizerTests: XCTestCase {
         unsafe recognizer.processTouches(emptyPointer, count: 0, timestamp: 0.15, modifierFlags: [])
 
         XCTAssertTrue(mockDelegate.didTapCalled, "Tap should be detected for quick release")
+    }
+
+    func testTapUsesFirstInvalidFrameTimeInsteadOfDelayedStableEnd() {
+        recognizer.configuration.tapThreshold = 0.15
+
+        let touches = [
+            createTouch(x: 0.3, y: 0.5),
+            createTouch(x: 0.5, y: 0.5),
+            createTouch(x: 0.7, y: 0.5),
+        ]
+        let (pointer, count, cleanup) = unsafe createTouchData(touches: touches)
+        defer { cleanup() }
+
+        unsafe recognizer.processTouches(pointer, count: count, timestamp: 0.0, modifierFlags: [])
+        unsafe recognizer.processTouches(pointer, count: count, timestamp: 0.02, modifierFlags: [])
+
+        let emptyTouches: [MTTouch] = []
+        let (emptyPointer, _, emptyCleanup) = unsafe createTouchData(touches: emptyTouches)
+        defer { emptyCleanup() }
+
+        // First invalid frame is still inside tapThreshold; second stable frame is not.
+        unsafe recognizer.processTouches(emptyPointer, count: 0, timestamp: 0.14, modifierFlags: [])
+        unsafe recognizer.processTouches(emptyPointer, count: 0, timestamp: 0.20, modifierFlags: [])
+
+        XCTAssertTrue(
+            mockDelegate.didTapCalled,
+            "Release stabilization delay should not make a valid tap miss the threshold")
     }
 
     func testTapNotDetectedFromSingleFrameContactNoise() {
@@ -895,8 +924,8 @@ final class GestureRecognizerTests: XCTestCase {
     func testCooldownDuringActiveDragPreventsImmediateRestart() {
         // This test verifies that the cooldown mechanism works during an ACTIVE drag
         // When 4 fingers are detected during dragging, it cancels and sets cooldown
-        // The cooldown should NOT block when going back to 3 fingers from idle state
-        // (that's intentional - see comment in code "so user can start a new gesture")
+        // The cooldown should block a direct return to 3 fingers to avoid
+        // accidental middle clicks while a 4-finger system gesture is lifting.
 
         recognizer.configuration.moveThreshold = 0.01
 
@@ -937,14 +966,13 @@ final class GestureRecognizerTests: XCTestCase {
         XCTAssertTrue(mockDelegate.didCancelDraggingCalled, "4 fingers should cancel dragging")
         XCTAssertEqual(recognizer.state, .idle, "State should be idle after cancel")
 
-        // Now try 3 fingers again - since state is idle, cooldown should clear
-        // and gesture should be allowed (this is the intended behavior)
+        // Now try 3 fingers again without dropping below 3 first.
         mockDelegate.reset()
         unsafe recognizer.processTouches(pointer3, count: count3, timestamp: 0.3, modifierFlags: [])
 
-        // Gesture SHOULD start because cooldown clears when (state == .idle && fingerCount == 3)
-        XCTAssertTrue(
-            mockDelegate.didStartCalled, "Gesture should start from idle state even after cancel")
+        XCTAssertFalse(
+            mockDelegate.didStartCalled,
+            "Gesture should stay blocked until contact count drops below 3")
     }
 
     func testCooldownClearsWhenFingersDropBelowThree() {

@@ -54,6 +54,8 @@ final class MouseEventGenerator: @unchecked Sendable {
     // Smoothing state for EMA (exponential moving average)
     private var previousDeltaX: CGFloat = 0
     private var previousDeltaY: CGFloat = 0
+    private var pendingDeltaX: CGFloat = 0
+    private var pendingDeltaY: CGFloat = 0
     
     // Accumulated drag position: seeded at startDrag from the real cursor,
     // then advanced purely by adding deltas. Used as the event position field
@@ -135,6 +137,8 @@ final class MouseEventGenerator: @unchecked Sendable {
         // Reset smoothing state
         previousDeltaX = 0
         previousDeltaY = 0
+        pendingDeltaX = 0
+        pendingDeltaY = 0
         
         // Seed accumulated drag position from actual cursor
         lastDragPosition = quartzPos
@@ -206,16 +210,23 @@ final class MouseEventGenerator: @unchecked Sendable {
         previousDeltaX = smoothedDeltaX
         previousDeltaY = smoothedDeltaY
 
-        let horizontalMagnitude = abs(smoothedDeltaX)
-        let verticalMagnitude = abs(smoothedDeltaY)
-        if horizontalMagnitude < 0.001 && verticalMagnitude < minimumMovementThreshold {
+        pendingDeltaX += smoothedDeltaX
+        pendingDeltaY += smoothedDeltaY
+
+        let movementMagnitude = hypot(pendingDeltaX, pendingDeltaY)
+        if movementMagnitude < minimumMovementThreshold {
             return
         }
 
-        // Advance accumulated position by smoothed deltas
+        let emitDeltaX = pendingDeltaX
+        let emitDeltaY = pendingDeltaY
+        pendingDeltaX = 0
+        pendingDeltaY = 0
+
+        // Advance accumulated position by pending deltas
         var targetPos = CGPoint(
-            x: lastDragPosition.x + smoothedDeltaX,
-            y: lastDragPosition.y + smoothedDeltaY
+            x: lastDragPosition.x + emitDeltaX,
+            y: lastDragPosition.y + emitDeltaY
         )
         
         // Clamp to global display bounds to prevent the accumulated position from drifting
@@ -241,8 +252,8 @@ final class MouseEventGenerator: @unchecked Sendable {
         // mouseEventDeltaX/Y are effectively integral in Quartz event storage.
         // Writing via setDoubleValueField does not preserve fractional precision, so
         // emit rounded integer deltas explicitly (better than implicit truncation).
-        event.setIntegerValueField(.mouseEventDeltaX, value: Int64(smoothedDeltaX.rounded()))
-        event.setIntegerValueField(.mouseEventDeltaY, value: Int64(smoothedDeltaY.rounded()))
+        event.setIntegerValueField(.mouseEventDeltaX, value: Int64(emitDeltaX.rounded()))
+        event.setIntegerValueField(.mouseEventDeltaY, value: Int64(emitDeltaY.rounded()))
         
         event.setIntegerValueField(.mouseEventButtonNumber, value: 2)
         event.setIntegerValueField(.eventSourceUserData, value: magicUserData)
@@ -274,6 +285,8 @@ final class MouseEventGenerator: @unchecked Sendable {
 
             self.previousDeltaX = 0
             self.previousDeltaY = 0
+            self.pendingDeltaX = 0
+            self.pendingDeltaY = 0
             let currentPos = self.currentMouseLocationQuartz
             self.sendMiddleMouseUp(at: currentPos)
         }
@@ -374,6 +387,8 @@ final class MouseEventGenerator: @unchecked Sendable {
             guard let self = self else { return }
             self.previousDeltaX = 0
             self.previousDeltaY = 0
+            self.pendingDeltaX = 0
+            self.pendingDeltaY = 0
             let currentPos = self.currentMouseLocationQuartz
             self.sendMiddleMouseUp(at: currentPos)
         }
@@ -411,6 +426,8 @@ final class MouseEventGenerator: @unchecked Sendable {
             
             self.previousDeltaX = 0
             self.previousDeltaY = 0
+            self.pendingDeltaX = 0
+            self.pendingDeltaY = 0
             
             let pos = self.currentMouseLocationQuartz
             self.sendMiddleMouseUp(at: pos)
@@ -683,6 +700,8 @@ final class MouseEventGenerator: @unchecked Sendable {
             
             self.previousDeltaX = 0
             self.previousDeltaY = 0
+            self.pendingDeltaX = 0
+            self.pendingDeltaY = 0
             
             let pos = self.currentMouseLocationQuartz
             self.sendMiddleMouseUp(at: pos)

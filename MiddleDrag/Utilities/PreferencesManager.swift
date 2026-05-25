@@ -76,7 +76,7 @@ public final class PreferencesManager: @unchecked Sendable {
             Keys.exclusionZoneSize: 0.15,
             Keys.requireModifierKey: false,
             Keys.modifierKeyType: ModifierKeyType.shift.rawValue,
-            Keys.contactSizeFilterEnabled: false,
+            Keys.contactSizeFilterEnabled: true,
             Keys.maxContactSize: 1.5,
             // Window size filter defaults
             Keys.minimumWindowSizeFilterEnabled: false,
