@@ -71,9 +71,14 @@ public final class MultitouchManager: @unchecked Sendable {
     // read from gestureRecognizerDidTap (gesture queue / main dispatch).
     private let forceClickLock = NSLock()
     private var _lastForceClickTime: TimeInterval = 0
+    private var _forceClickConversionActive = false
     private var lastForceClickTime: TimeInterval {
         get { forceClickLock.withLock { _lastForceClickTime } }
         set { forceClickLock.withLock { _lastForceClickTime = newValue } }
+    }
+    private var forceClickConversionActive: Bool {
+        get { forceClickLock.withLock { _forceClickConversionActive } }
+        set { forceClickLock.withLock { _forceClickConversionActive = newValue } }
     }
     private let forceClickDeduplicationWindow: TimeInterval = 0.5  // 500ms
     private let forceClickStableFrameRequirement = 2
@@ -532,6 +537,7 @@ public final class MultitouchManager: @unchecked Sendable {
         lastGestureWasActive = false
         gestureEndTime = 0
         lastForceClickTime = 0
+        forceClickConversionActive = false
         clearNativeMouseSuppression()
 
         deviceMonitor?.stop()
@@ -603,6 +609,7 @@ public final class MultitouchManager: @unchecked Sendable {
             lastGestureWasActive = false
             gestureEndTime = 0
             lastForceClickTime = 0
+            forceClickConversionActive = false
             clearNativeMouseSuppression()
         }
     }
@@ -791,16 +798,20 @@ public final class MultitouchManager: @unchecked Sendable {
             && !isActivelyDragging
             && !shouldPassThroughCurrentGesture
 
-        if canConvertForceClick {
-            // Check event type - we want to handle both down and up
-            if type == .leftMouseDown || type == .leftMouseUp {
-                // Perform middle click instead
-                if type == .leftMouseDown {
+        if isLeftButton && !isOurEvent {
+            if type == .leftMouseDown {
+                if canConvertForceClick {
+                    forceClickConversionActive = true
                     lastForceClickTime = now
                     suppressNativeMouseEvents(for: postMiddleClickSuppressionWindow)
                     mouseGenerator.performClick()
+                    // Suppress the original left click
+                    return nil
                 }
-                // Suppress the original left click
+
+                forceClickConversionActive = false
+            } else if type == .leftMouseUp && forceClickConversionActive {
+                forceClickConversionActive = false
                 return nil
             }
         }

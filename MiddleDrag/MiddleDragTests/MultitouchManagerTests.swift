@@ -2091,6 +2091,57 @@ final class MultitouchManagerTests: XCTestCase {
         unsafe XCTAssertNotNil(result, "Single-frame three-finger noise should not become middle click")
     }
 
+    func testProcessEventDoesNotSuppressMouseUpWhenMouseDownWasNotConverted() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice }, eventTapSetup: { true })
+
+        manager.currentFingerCount = 3
+
+        let downEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let downResult = unsafe manager.processEvent(downEvent, type: .leftMouseDown)
+        unsafe XCTAssertNotNil(downResult, "Unstable mouse-down should pass through")
+
+        manager.currentFingerCount = 3
+
+        let upEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let upResult = unsafe manager.processEvent(upEvent, type: .leftMouseUp)
+        unsafe XCTAssertNotNil(
+            upResult,
+            "Mouse-up must pass through when the matching mouse-down was not converted")
+    }
+
+    func testProcessEventSuppressesMouseUpWhenMouseDownWasConverted() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice }, eventTapSetup: { true })
+
+        manager.currentFingerCount = 3
+        manager.currentFingerCount = 3
+
+        let downEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let downResult = unsafe manager.processEvent(downEvent, type: .leftMouseDown)
+        unsafe XCTAssertNil(downResult, "Stable three-finger mouse-down should be converted")
+
+        let upEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let upResult = unsafe manager.processEvent(upEvent, type: .leftMouseUp)
+        unsafe XCTAssertNil(upResult, "Converted mouse-down should suppress matching mouse-up")
+    }
+
     func testProcessEventPassesNormalLeftClick() throws {
         try requireCGEventTestsEnabled()
         let mockDevice = unsafe MockDeviceMonitor()
