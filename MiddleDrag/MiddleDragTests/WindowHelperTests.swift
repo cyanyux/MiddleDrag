@@ -389,6 +389,44 @@ final class WindowHelperTests: XCTestCase {
         XCTAssertFalse(result)
     }
 
+    func testIsPointOverAppWindowOwnedByRequiresTopmostWindowOwnerMatch() {
+        let mockWindows = [
+            createMockWindow(
+                x: 100, y: 100, width: 400, height: 300,
+                ownerName: "ForegroundApp", windowID: 111),
+            createMockWindow(
+                x: 100, y: 100, width: 400, height: 300,
+                ownerName: "AltTab", windowID: 222),
+        ]
+
+        let result = WindowHelper.isPoint(
+            CGPoint(x: 200, y: 200),
+            overAppWindowOwnedBy: ["AltTab"],
+            windowList: mockWindows
+        )
+
+        XCTAssertFalse(result)
+    }
+
+    func testIsPointOverAppWindowOwnedByAllowsTopmostWindowOwnerMatch() {
+        let mockWindows = [
+            createMockWindow(
+                x: 100, y: 100, width: 400, height: 300,
+                ownerName: "AltTab", windowID: 111),
+            createMockWindow(
+                x: 100, y: 100, width: 400, height: 300,
+                ownerName: "BackgroundApp", windowID: 222),
+        ]
+
+        let result = WindowHelper.isPoint(
+            CGPoint(x: 200, y: 200),
+            overAppWindowOwnedBy: ["AltTab"],
+            windowList: mockWindows
+        )
+
+        XCTAssertTrue(result)
+    }
+
     // MARK: - WindowID-Based Bundle ID Lookup Tests
 
     func testGetWindowAt_WithMockData_OverlappingWindows_UsesWindowIDForBundleLookup() {

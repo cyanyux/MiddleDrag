@@ -192,7 +192,7 @@ class WindowHelper {
         return isPoint(event.location, overAppWindowOwnedBy: ownerNames, windowList: windows)
     }
 
-    /// Internal method for testing - checks whether a point is over a visible window owned by
+    /// Internal method for testing - checks whether the topmost window at a point is owned by
     /// one of the supplied apps. Unlike regular window hit-testing, this intentionally does not
     /// require layer 0 because switcher overlays can use nonstandard window layers.
     nonisolated static func isPoint(
@@ -204,8 +204,6 @@ class WindowHelper {
 
         for windowInfo in windowList {
             guard
-                let ownerName = windowInfo[kCGWindowOwnerName] as? String,
-                ownerNames.contains(ownerName),
                 let boundsDict = windowInfo[kCGWindowBounds] as? [String: CGFloat],
                 let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
             else {
@@ -213,7 +211,8 @@ class WindowHelper {
             }
 
             if bounds.contains(point) {
-                return true
+                let ownerName = windowInfo[kCGWindowOwnerName] as? String
+                return ownerName.map { ownerNames.contains($0) } ?? false
             }
         }
 
