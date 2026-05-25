@@ -547,6 +547,32 @@ import XCTest
         ctrl.buildMenu()  // Should include relift option
     }
 
+    func testToggleVerticalSwipePassthroughViaSelector() {
+        unsafe XCTAssertNoThrow(controller.perform(#selector(MenuBarController.toggleVerticalSwipePassthrough)))
+    }
+
+    func testBuildMenuWithVerticalSwipePassthroughEnabled() {
+        var prefs = UserPreferences()
+        prefs.passThroughVerticalSwipes = true
+
+        let ctrl = unsafe MenuBarController(multitouchManager: manager, preferences: prefs)
+        XCTAssertNotNil(ctrl)
+        ctrl.buildMenu()
+    }
+
+    func testToggleAltTabPassthroughViaSelector() {
+        unsafe XCTAssertNoThrow(controller.perform(#selector(MenuBarController.toggleAltTabPassthrough)))
+    }
+
+    func testBuildMenuWithAltTabPassthroughEnabled() {
+        var prefs = UserPreferences()
+        prefs.passThroughAltTab = true
+
+        let ctrl = unsafe MenuBarController(multitouchManager: manager, preferences: prefs)
+        XCTAssertNotNil(ctrl)
+        ctrl.buildMenu()
+    }
+
     // MARK: - Configure System Gestures Tests
 
     // Note: We cannot directly test configureSystemGestures as it calls AlertHelper
@@ -570,6 +596,8 @@ import XCTest
         unsafe controller.perform(#selector(MenuBarController.toggleContactSizeFilter))
         unsafe controller.perform(#selector(MenuBarController.toggleMinimumWindowSizeFilter))
         unsafe controller.perform(#selector(MenuBarController.toggleAllowReliftDuringDrag))
+        unsafe controller.perform(#selector(MenuBarController.toggleVerticalSwipePassthrough))
+        unsafe controller.perform(#selector(MenuBarController.toggleAltTabPassthrough))
         unsafe controller.perform(#selector(MenuBarController.toggleCrashReporting))
         unsafe controller.perform(#selector(MenuBarController.togglePerformanceMonitoring))
 

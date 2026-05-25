@@ -2060,6 +2060,7 @@ final class MultitouchManagerTests: XCTestCase {
 
         // Setup state for force click: 3 fingers + left mouse down
         manager.currentFingerCount = 3
+        manager.currentFingerCount = 3
 
         // Create a LEFT mouse down event (physical click)
         let event = CGEvent(
@@ -2071,6 +2072,74 @@ final class MultitouchManagerTests: XCTestCase {
 
         unsafe XCTAssertNil(
             result, "Physical left click with 3 fingers should be suppressed (Force Click)")
+    }
+
+    func testProcessEventDoesNotInterceptTransientThreeFingerForceClick() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice }, eventTapSetup: { true })
+
+        manager.currentFingerCount = 3
+
+        let event = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let result = unsafe manager.processEvent(event, type: .leftMouseDown)
+
+        unsafe XCTAssertNotNil(result, "Single-frame three-finger noise should not become middle click")
+    }
+
+    func testProcessEventDoesNotSuppressMouseUpWhenMouseDownWasNotConverted() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice }, eventTapSetup: { true })
+
+        manager.currentFingerCount = 3
+
+        let downEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let downResult = unsafe manager.processEvent(downEvent, type: .leftMouseDown)
+        unsafe XCTAssertNotNil(downResult, "Unstable mouse-down should pass through")
+
+        manager.currentFingerCount = 3
+
+        let upEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let upResult = unsafe manager.processEvent(upEvent, type: .leftMouseUp)
+        unsafe XCTAssertNotNil(
+            upResult,
+            "Mouse-up must pass through when the matching mouse-down was not converted")
+    }
+
+    func testProcessEventSuppressesMouseUpWhenMouseDownWasConverted() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice }, eventTapSetup: { true })
+
+        manager.currentFingerCount = 3
+        manager.currentFingerCount = 3
+
+        let downEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let downResult = unsafe manager.processEvent(downEvent, type: .leftMouseDown)
+        unsafe XCTAssertNil(downResult, "Stable three-finger mouse-down should be converted")
+
+        let upEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let upResult = unsafe manager.processEvent(upEvent, type: .leftMouseUp)
+        unsafe XCTAssertNil(upResult, "Converted mouse-down should suppress matching mouse-up")
     }
 
     func testProcessEventPassesNormalLeftClick() throws {
@@ -2257,6 +2326,39 @@ final class MultitouchManagerTests: XCTestCase {
         manager.stop()
     }
 
+    func testMiddleTapSuppressesDelayedRightClickAfterEnd() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice }, eventTapSetup: { true })
+
+        var config = GestureConfiguration()
+        config.tapToClickEnabled = true
+        manager.updateConfiguration(config)
+
+        manager.start()
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+        manager.gestureRecognizerDidTap(recognizer)
+
+        let tapExpectation = XCTestExpectation(description: "Tap state")
+        DispatchQueue.main.async {
+            tapExpectation.fulfill()
+        }
+        wait(for: [tapExpectation], timeout: 1.0)
+
+        let rightEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .rightMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .right)!
+
+        let result = unsafe manager.processEvent(rightEvent, type: .rightMouseDown)
+
+        unsafe XCTAssertNil(result, "Right click immediately after middle tap should be suppressed")
+
+        manager.stop()
+    }
+
     func testCancelledDragDoesNotSuppressEventsAfterEnd() throws {
         try requireCGEventTestsEnabled()
         let mockDevice = unsafe MockDeviceMonitor()
@@ -2383,9 +2485,9 @@ final class MultitouchManagerTests: XCTestCase {
         }
         wait(for: [expectation], timeout: 1.0)
 
-        // Wait for suppression window to expire (0.15s + buffer)
+        // Wait for suppression window to expire (0.35s + buffer)
         let waitExpectation = XCTestExpectation(description: "Wait for suppression window")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
             waitExpectation.fulfill()
         }
         wait(for: [waitExpectation], timeout: 1.0)

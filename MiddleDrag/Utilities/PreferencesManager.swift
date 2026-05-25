@@ -36,6 +36,10 @@ public final class PreferencesManager: @unchecked Sendable {
         static let titleBarHeight = "titleBarHeight"
         // Relift during drag key
         static let allowReliftDuringDrag = "allowReliftDuringDrag"
+        // Vertical swipe passthrough key
+        static let passThroughVerticalSwipes = "passThroughVerticalSwipes"
+        // App passthrough keys
+        static let passThroughAltTab = "passThroughAltTab"
         // Gesture configuration prompt tracking
         static let hasShownGestureConfigurationPrompt = "hasShownGestureConfigurationPrompt"
         // Hotkey binding keys
@@ -85,6 +89,10 @@ public final class PreferencesManager: @unchecked Sendable {
             Keys.titleBarHeight: 28.0,
             // Relift during drag default
             Keys.allowReliftDuringDrag: false,
+            // Vertical swipe passthrough default
+            Keys.passThroughVerticalSwipes: false,
+            // App passthrough defaults
+            Keys.passThroughAltTab: false,
             // Gesture configuration prompt tracking
             Keys.hasShownGestureConfigurationPrompt: false,
             // Hotkey defaults
@@ -127,6 +135,9 @@ public final class PreferencesManager: @unchecked Sendable {
         prefs.passThroughTitleBar = userDefaults.bool(forKey: Keys.passThroughTitleBar)
         prefs.titleBarHeight = userDefaults.double(forKey: Keys.titleBarHeight)
         prefs.allowReliftDuringDrag = userDefaults.bool(forKey: Keys.allowReliftDuringDrag)
+        prefs.passThroughVerticalSwipes = userDefaults.bool(
+            forKey: Keys.passThroughVerticalSwipes)
+        prefs.passThroughAltTab = userDefaults.bool(forKey: Keys.passThroughAltTab)
         prefs.toggleHotKey = HotKeyBinding(
             keyCode: UInt32(userDefaults.integer(forKey: Keys.toggleHotKeyCode)),
             carbonModifiers: UInt32(userDefaults.integer(forKey: Keys.toggleHotKeyModifiers))
@@ -168,6 +179,11 @@ public final class PreferencesManager: @unchecked Sendable {
         userDefaults.set(preferences.titleBarHeight, forKey: Keys.titleBarHeight)
         // Relift during drag
         userDefaults.set(preferences.allowReliftDuringDrag, forKey: Keys.allowReliftDuringDrag)
+        // Vertical swipe passthrough
+        userDefaults.set(
+            preferences.passThroughVerticalSwipes, forKey: Keys.passThroughVerticalSwipes)
+        // App passthrough
+        userDefaults.set(preferences.passThroughAltTab, forKey: Keys.passThroughAltTab)
         // Hotkey bindings
         userDefaults.set(Int(preferences.toggleHotKey.keyCode), forKey: Keys.toggleHotKeyCode)
         userDefaults.set(Int(preferences.toggleHotKey.carbonModifiers), forKey: Keys.toggleHotKeyModifiers)

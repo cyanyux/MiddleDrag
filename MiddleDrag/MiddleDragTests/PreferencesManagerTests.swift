@@ -199,6 +199,27 @@ final class PreferencesManagerTests: XCTestCase {
         XCTAssertEqual(loaded.titleBarHeight, 50.0, accuracy: 0.001)
     }
 
+    // MARK: - Vertical Swipe Passthrough Tests
+
+    func testLoadPreferencesVerticalSwipePassthroughDefault() {
+        let prefs = preferencesManager.loadPreferences()
+
+        XCTAssertFalse(prefs.passThroughVerticalSwipes)
+        XCTAssertFalse(prefs.passThroughAltTab)
+    }
+
+    func testSaveAndLoadVerticalSwipePassthroughPreference() {
+        var prefs = UserPreferences()
+        prefs.passThroughVerticalSwipes = true
+        prefs.passThroughAltTab = true
+
+        preferencesManager.savePreferences(prefs)
+        let loaded = preferencesManager.loadPreferences()
+
+        XCTAssertTrue(loaded.passThroughVerticalSwipes)
+        XCTAssertTrue(loaded.passThroughAltTab)
+    }
+
     // MARK: - Singleton Tests
 
     func testSharedInstanceIsSingleton() {

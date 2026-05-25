@@ -173,6 +173,52 @@ class WindowHelper {
         return isCursorInTitleBar(at: cursorPoint, titleBarHeight: titleBarHeight)
     }
 
+    /// Thread-safe check if the cursor is over a window owned by one of the supplied apps.
+    /// Uses owner names from CGWindowList so this can run from the gesture queue without AppKit.
+    nonisolated static func isCursorOverAppWindowThreadSafe(ownerNames: Set<String>) -> Bool {
+        guard !ownerNames.isEmpty else { return false }
+        guard let event = CGEvent(source: nil) else {
+            return false
+        }
+
+        let options: CGWindowListOption = [.excludeDesktopElements, .optionOnScreenOnly]
+        guard
+            let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID)
+                as? [[CFString: Any]]
+        else {
+            return false
+        }
+
+        return isPoint(event.location, overAppWindowOwnedBy: ownerNames, windowList: windows)
+    }
+
+    /// Internal method for testing - checks whether the topmost window at a point is owned by
+    /// one of the supplied apps. Unlike regular window hit-testing, this intentionally does not
+    /// require layer 0 because switcher overlays can use nonstandard window layers.
+    nonisolated static func isPoint(
+        _ point: CGPoint,
+        overAppWindowOwnedBy ownerNames: Set<String>,
+        windowList: [[CFString: Any]]
+    ) -> Bool {
+        guard !ownerNames.isEmpty else { return false }
+
+        for windowInfo in windowList {
+            guard
+                let boundsDict = windowInfo[kCGWindowBounds] as? [String: CGFloat],
+                let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
+            else {
+                continue
+            }
+
+            if bounds.contains(point) {
+                let ownerName = windowInfo[kCGWindowOwnerName] as? String
+                return ownerName.map { ownerNames.contains($0) } ?? false
+            }
+        }
+
+        return false
+    }
+
     /// Internal method for testing - check if a point is in a window's title bar region
     /// - Parameters:
     ///   - point: Screen point in Quartz coordinates (origin top-left)

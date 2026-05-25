@@ -25,6 +25,7 @@ class GestureRecognizer {
 
     // Stability tracking - prevents false gesture ends during brief state transitions
     private var stableFrameCount: Int = 0
+    private var validGestureFrameCount: Int = 0
 
     // Cooldown after 4-finger cancellation
     // Prevents accidental gesture triggers when lifting one finger during Mission Control
@@ -42,8 +43,6 @@ class GestureRecognizer {
         _ touches: UnsafeMutableRawPointer, count: Int, timestamp: Double,
         modifierFlags: CGEventFlags
     ) {
-        let touchArray = unsafe touches.bindMemory(to: MTTouch.self, capacity: count)
-
         // Check modifier key requirement first (if enabled)
         if configuration.requireModifierKey {
             let requiredFlagPresent: Bool
@@ -67,35 +66,8 @@ class GestureRecognizer {
             }
         }
 
-        // Collect only valid touching fingers (state 3 = touching down, state 4 = active)
-        // Skip state 5 (lifting), 6 (lingering), 7 (gone)
-        // Apply palm rejection filters
-        var validFingers: [MTPoint] = []
-
-        for i in 0..<count {
-            let touch = unsafe touchArray[i]
-            if touch.state == 3 || touch.state == 4 {
-                let position = touch.normalizedVector.position
-
-                // Palm rejection: Exclusion zone filter
-                // Skip touches in the bottom portion of trackpad (where palm rests)
-                if configuration.exclusionZoneEnabled {
-                    if position.y < configuration.exclusionZoneSize {
-                        continue  // Skip this touch
-                    }
-                }
-
-                // Palm rejection: Contact size filter
-                // Skip touches that are too large (palms have larger contact area)
-                if configuration.contactSizeFilterEnabled {
-                    if touch.zTotal > configuration.maxContactSize {
-                        continue  // Skip this touch - likely a palm
-                    }
-                }
-
-                validFingers.append(position)
-            }
-        }
+        let validFingers = unsafe Self.validFingerPositions(
+            from: touches, count: count, configuration: configuration)
 
         let fingerCount = validFingers.count
 
@@ -139,9 +111,40 @@ class GestureRecognizer {
             if stableFrameCount >= 2 {
                 handleGestureEnd(timestamp: timestamp)
             }
+        } else {
+            validGestureFrameCount = 0
         }
 
         frameCount += 1
+    }
+
+    static func validFingerPositions(
+        from touches: UnsafeMutableRawPointer,
+        count: Int,
+        configuration: GestureConfiguration
+    ) -> [MTPoint] {
+        let touchArray = unsafe touches.bindMemory(to: MTTouch.self, capacity: count)
+        var validFingers: [MTPoint] = []
+        validFingers.reserveCapacity(count)
+
+        for i in 0..<count {
+            let touch = unsafe touchArray[i]
+            if touch.state == 3 || touch.state == 4 {
+                let position = touch.normalizedVector.position
+
+                if configuration.exclusionZoneEnabled && position.y < configuration.exclusionZoneSize {
+                    continue
+                }
+
+                if configuration.contactSizeFilterEnabled && touch.zTotal > configuration.maxContactSize {
+                    continue
+                }
+
+                validFingers.append(position)
+            }
+        }
+
+        return validFingers
     }
 
     /// Reset gesture recognition state
@@ -153,6 +156,7 @@ class GestureRecognizer {
         gestureStartTime = 0
         frameCount = 0
         stableFrameCount = 0
+        validGestureFrameCount = 0
         isInCancellationCooldown = false  // Clear cooldown on reset
     }
 
@@ -160,6 +164,7 @@ class GestureRecognizer {
 
     private func handleValidGesture(fingers: [MTPoint], timestamp: Double) {
         stableFrameCount = 0
+        validGestureFrameCount += 1
 
         let centroid = calculateCentroid(fingers: fingers)
 
@@ -186,7 +191,31 @@ class GestureRecognizer {
         case .possibleTap:
             // Check if we should transition to drag
             guard let startPos = gestureStartPosition else { return }
+            let deltaX = centroid.x - startPos.x
+            let deltaY = centroid.y - startPos.y
             let movement = startPos.distance(to: centroid)
+
+            if configuration.passThroughVerticalSwipes {
+                let horizontalMovement = abs(deltaX)
+                let verticalMovement = abs(deltaY)
+                let isClearlyVertical =
+                    verticalMovement >= configuration.verticalSwipeThreshold
+                    && verticalMovement >= horizontalMovement * configuration.verticalSwipeDominanceRatio
+
+                if isClearlyVertical {
+                    handleGestureCancel()
+                    return
+                }
+
+                let isPotentialVerticalSwipe =
+                    verticalMovement > horizontalMovement * configuration.verticalSwipeDominanceRatio
+
+                if isPotentialVerticalSwipe {
+                    lastCentroid = centroid
+                    return
+                }
+            }
+
             // Only transition to drag if there is actual movement
             // Resting fingers (no movement) should NOT trigger a drag
             if movement > configuration.moveThreshold {
@@ -233,9 +262,13 @@ class GestureRecognizer {
         switch state {
         case .possibleTap:
             // Only trigger tap if:
-            // 1. Duration is less than tap threshold (quick tap)
-            // 2. Duration doesn't exceed max hold duration (safety check for edge cases)
-            if elapsed < configuration.tapThreshold && elapsed <= configuration.maxTapHoldDuration {
+            // 1. At least two valid touch frames were observed (filters one-frame noise)
+            // 2. Duration is long enough to be intentional but less than tap threshold
+            // 3. Duration doesn't exceed max hold duration (safety check for edge cases)
+            if validGestureFrameCount >= configuration.minimumTapFrameCount
+                && elapsed >= configuration.minimumTapDuration
+                && elapsed < configuration.tapThreshold
+                && elapsed <= configuration.maxTapHoldDuration {
                 delegate?.gestureRecognizerDidTap(self)
             } else {
                 // Gesture ended without a tap - notify delegate to reset state
