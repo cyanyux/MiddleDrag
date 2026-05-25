@@ -76,6 +76,13 @@ public final class MultitouchManager: @unchecked Sendable {
         set { forceClickLock.withLock { _lastForceClickTime = newValue } }
     }
     private let forceClickDeduplicationWindow: TimeInterval = 0.5  // 500ms
+    private let forceClickStableFrameRequirement = 2
+    private let gestureStartSuppressionWindow: TimeInterval = 0.12
+    private let postMiddleClickSuppressionWindow: TimeInterval = 0.35
+
+    private let nativeMouseSuppressionLock = NSLock()
+    private var gestureStartMouseSuppressionUntil: TimeInterval = 0
+    private var nativeMouseSuppressionUntil: TimeInterval = 0
 
     // Core components
     private let gestureRecognizer = GestureRecognizer()
@@ -124,6 +131,8 @@ public final class MultitouchManager: @unchecked Sendable {
     // Thread-safe finger count tracking
     private let fingerCountLock = NSLock()
     private var _currentFingerCount: Int = 0
+    private var stableThreeFingerFrameCount: Int = 0
+    private var stableThreeFingerContactActive: Bool = false
     internal var currentFingerCount: Int {
         get {
             fingerCountLock.lock()
@@ -131,9 +140,7 @@ public final class MultitouchManager: @unchecked Sendable {
             return _currentFingerCount
         }
         set {
-            fingerCountLock.lock()
-            defer { fingerCountLock.unlock() }
-            _currentFingerCount = newValue
+            recordValidFingerCount(newValue)
         }
     }
 
@@ -525,6 +532,7 @@ public final class MultitouchManager: @unchecked Sendable {
         lastGestureWasActive = false
         gestureEndTime = 0
         lastForceClickTime = 0
+        clearNativeMouseSuppression()
 
         deviceMonitor?.stop()
         deviceMonitor = nil
@@ -595,6 +603,7 @@ public final class MultitouchManager: @unchecked Sendable {
             lastGestureWasActive = false
             gestureEndTime = 0
             lastForceClickTime = 0
+            clearNativeMouseSuppression()
         }
     }
 
@@ -620,6 +629,7 @@ public final class MultitouchManager: @unchecked Sendable {
             self.isInThreeFingerGesture = false
             self.gestureEndTime = CACurrentMediaTime()
             self.lastGestureWasActive = false
+            self.clearNativeMouseSuppression()
             
             // Force send MIDDLE_UP unconditionally
             // Unlike cancelDrag(), this always sends UP even if internal state is already false
@@ -769,18 +779,25 @@ public final class MultitouchManager: @unchecked Sendable {
             return unsafe Unmanaged.passUnretained(event)
         }
 
-        // Force click support: convert left clicks to middle clicks when 3+ fingers are on trackpad
-        // This works based on raw finger count, not gesture activation state, so force clicks
-        // work even when gestures are cancelled (e.g., modifier key not held)
-        // However, don't perform force clicks during an active drag to avoid interference
-        // Also skip if we're passing through to system (e.g., title bar drag)
-        let hasThreeOrMoreFingers = currentFingerCount >= 3
-        if hasThreeOrMoreFingers && isLeftButton && !isOurEvent && !isActivelyDragging && !shouldPassThroughCurrentGesture {
+        // Force click support: convert physical left clicks to middle clicks only after
+        // the contact stream has produced stable, filtered three-finger input. Using
+        // raw touch count here is too noisy: lifting/lingering touches and palms can
+        // briefly report as 3+ contacts and cause accidental middle clicks.
+        let canConvertForceClick =
+            hasStableThreeFingerContact
+            && modifierKeyHeld
+            && isLeftButton
+            && !isOurEvent
+            && !isActivelyDragging
+            && !shouldPassThroughCurrentGesture
+
+        if canConvertForceClick {
             // Check event type - we want to handle both down and up
             if type == .leftMouseDown || type == .leftMouseUp {
                 // Perform middle click instead
                 if type == .leftMouseDown {
-                    lastForceClickTime = CACurrentMediaTime()
+                    lastForceClickTime = now
+                    suppressNativeMouseEvents(for: postMiddleClickSuppressionWindow)
                     mouseGenerator.performClick()
                 }
                 // Suppress the original left click
@@ -790,7 +807,10 @@ public final class MultitouchManager: @unchecked Sendable {
 
         // Suppress left/right events during gesture or shortly after
         // Only suppress after gesture end if the last gesture was actually active (not cancelled)
-        let shouldSuppress = gestureActive || (timeSinceGestureEnd < 0.15 && lastGestureWasActive)
+        let shouldSuppress =
+            gestureActive
+            || isNativeMouseSuppressionActive(at: now)
+            || (timeSinceGestureEnd < 0.15 && lastGestureWasActive)
 
         if shouldSuppress && !isMiddleButton {
             return nil  // Suppress the event
@@ -805,6 +825,61 @@ public final class MultitouchManager: @unchecked Sendable {
         gestureRecognizer.configuration = configuration
         mouseGenerator.smoothingFactor = configuration.smoothingFactor
         mouseGenerator.minimumMovementThreshold = CGFloat(configuration.minimumMovementThreshold)
+    }
+
+    private func recordValidFingerCount(_ validFingerCount: Int) {
+        fingerCountLock.lock()
+        _currentFingerCount = validFingerCount
+        if validFingerCount == 3 {
+            stableThreeFingerFrameCount += 1
+        } else {
+            stableThreeFingerFrameCount = 0
+            stableThreeFingerContactActive = false
+        }
+        if stableThreeFingerFrameCount >= forceClickStableFrameRequirement {
+            stableThreeFingerContactActive = true
+        }
+        fingerCountLock.unlock()
+    }
+
+    private var hasStableThreeFingerContact: Bool {
+        fingerCountLock.lock()
+        defer { fingerCountLock.unlock() }
+        return stableThreeFingerContactActive
+    }
+
+    private func suppressNativeMouseEvents(for duration: TimeInterval) {
+        let deadline = CACurrentMediaTime() + duration
+        nativeMouseSuppressionLock.lock()
+        nativeMouseSuppressionUntil = max(nativeMouseSuppressionUntil, deadline)
+        nativeMouseSuppressionLock.unlock()
+    }
+
+    private func suppressGestureStartMouseEvents(for duration: TimeInterval) {
+        let deadline = CACurrentMediaTime() + duration
+        nativeMouseSuppressionLock.lock()
+        gestureStartMouseSuppressionUntil = max(gestureStartMouseSuppressionUntil, deadline)
+        nativeMouseSuppressionLock.unlock()
+    }
+
+    private func isNativeMouseSuppressionActive(at timestamp: TimeInterval) -> Bool {
+        nativeMouseSuppressionLock.lock()
+        defer { nativeMouseSuppressionLock.unlock() }
+        return timestamp < nativeMouseSuppressionUntil
+            || timestamp < gestureStartMouseSuppressionUntil
+    }
+
+    private func clearGestureStartMouseSuppression() {
+        nativeMouseSuppressionLock.lock()
+        gestureStartMouseSuppressionUntil = 0
+        nativeMouseSuppressionLock.unlock()
+    }
+
+    private func clearNativeMouseSuppression() {
+        nativeMouseSuppressionLock.lock()
+        gestureStartMouseSuppressionUntil = 0
+        nativeMouseSuppressionUntil = 0
+        nativeMouseSuppressionLock.unlock()
     }
 
     /// Thread-safe check if cursor is over desktop (no window underneath)
@@ -833,6 +908,14 @@ public final class MultitouchManager: @unchecked Sendable {
         // Use thread-safe version that doesn't require main thread
         return WindowHelper.isCursorInTitleBarThreadSafe(titleBarHeight: titleBarHeight)
     }
+
+    /// Thread-safe check if cursor is over an app window that should fully own 3-finger input.
+    private func shouldSkipGestureForAppPassthrough() -> Bool {
+        guard configuration.passThroughAltTab else { return false }
+
+        return WindowHelper.isCursorOverAppWindowThreadSafe(
+            ownerNames: [GestureConfiguration.altTabOwnerName])
+    }
 }
 
 // MARK: - DeviceMonitorDelegate
@@ -846,8 +929,11 @@ extension MultitouchManager: DeviceMonitorDelegate {
     ) {
         guard isEnabled else { return }
 
-        // Update safe finger count immediately
-        currentFingerCount = Int(count)
+        let touchCount = Int(count)
+        let validFingerCount = unsafe GestureRecognizer.validFingerPositions(
+            from: touches, count: touchCount, configuration: configuration
+        ).count
+        recordValidFingerCount(validFingerCount)
 
         // Capture modifier flags before dispatching to gesture queue
         // Note: This callback runs on a framework-managed background thread, not main thread
@@ -859,7 +945,6 @@ extension MultitouchManager: DeviceMonitorDelegate {
         // eliminating the use-after-free / double-free risk of manual raw pointer
         // allocation that can occur when rapid sleep/wake cycles cause concurrent
         // restart() calls while async closures are still queued on gestureQueue.
-        let touchCount = Int(count)
         let touchData: Data?
         if touchCount > 0 {
             let byteCount = touchCount * MemoryLayout<MTTouch>.stride
@@ -898,6 +983,12 @@ extension MultitouchManager: GestureRecognizerDelegate {
     // approach trades minimal event leakage for responsiveness.
 
     func gestureRecognizerDidStart(_ recognizer: GestureRecognizer, at position: MTPoint) {
+        if shouldSkipGestureForAppPassthrough() {
+            Log.debug("gestureRecognizerDidStart: excluded app window detected - passing through", category: .gesture)
+            shouldPassThroughCurrentGesture = true
+            return
+        }
+
         // Check title bar passthrough at gesture START to decide if we should handle this gesture
         // This must happen before setting isInThreeFingerGesture to allow system to handle it
         if shouldSkipGestureForTitleBar() {
@@ -909,6 +1000,7 @@ extension MultitouchManager: GestureRecognizerDelegate {
         
         shouldPassThroughCurrentGesture = false
         Log.debug("gestureRecognizerDidStart: Normal gesture - handling ourselves", category: .gesture)
+        suppressGestureStartMouseEvents(for: gestureStartSuppressionWindow)
         DispatchQueue.main.async { [weak self] in
             self?.isInThreeFingerGesture = true
         }
@@ -929,6 +1021,7 @@ extension MultitouchManager: GestureRecognizerDelegate {
         // instability that ends and restarts the gesture (resetting per-gesture state).
         let timeSinceForceClick = CACurrentMediaTime() - lastForceClickTime
         if timeSinceForceClick < forceClickDeduplicationWindow {
+            suppressNativeMouseEvents(for: postMiddleClickSuppressionWindow)
             // Still reset gesture state
             DispatchQueue.main.async { [weak self] in
                 self?.isInThreeFingerGesture = false
@@ -989,6 +1082,9 @@ extension MultitouchManager: GestureRecognizerDelegate {
         }
 
         // Always reset state regardless of whether tap is performed
+        if shouldPerformTap {
+            suppressNativeMouseEvents(for: postMiddleClickSuppressionWindow)
+        }
         DispatchQueue.main.async { [weak self] in
             self?.isInThreeFingerGesture = false
             self?.isActivelyDragging = false  // Ensure drag state is cleared
@@ -1068,6 +1164,7 @@ extension MultitouchManager: GestureRecognizerDelegate {
         }
 
         // Set state ONLY after all checks pass and drag will actually start
+        suppressGestureStartMouseEvents(for: gestureStartSuppressionWindow)
         DispatchQueue.main.async { [weak self] in
             self?.isActivelyDragging = true
         }
@@ -1104,6 +1201,7 @@ extension MultitouchManager: GestureRecognizerDelegate {
             return
         }
         
+        suppressNativeMouseEvents(for: postMiddleClickSuppressionWindow)
         DispatchQueue.main.async { [weak self] in
             self?.isActivelyDragging = false
             self?.isInThreeFingerGesture = false
@@ -1118,6 +1216,7 @@ extension MultitouchManager: GestureRecognizerDelegate {
     func gestureRecognizerDidCancel(_ recognizer: GestureRecognizer) {
         // Cancel from early state (e.g., possibleTap) - reset state
         shouldPassThroughCurrentGesture = false
+        clearGestureStartMouseSuppression()
         DispatchQueue.main.async { [weak self] in
             self?.isInThreeFingerGesture = false
             self?.gestureEndTime = CACurrentMediaTime()
@@ -1128,6 +1227,7 @@ extension MultitouchManager: GestureRecognizerDelegate {
     func gestureRecognizerDidCancelDragging(_ recognizer: GestureRecognizer) {
         // Cancel drag immediately - user added 4th finger for Mission Control
         shouldPassThroughCurrentGesture = false
+        clearGestureStartMouseSuppression()
         DispatchQueue.main.async { [weak self] in
             self?.isActivelyDragging = false
             self?.isInThreeFingerGesture = false

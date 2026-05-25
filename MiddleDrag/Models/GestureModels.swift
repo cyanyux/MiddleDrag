@@ -25,14 +25,18 @@ enum GestureState: Sendable {
 
 /// Configuration for gesture detection and mouse behavior
 public struct GestureConfiguration: Sendable {
+    static let altTabOwnerName = "AltTab"
+
     // Sensitivity and smoothing
     var sensitivity: Float = 1.0
     var smoothingFactor: Float = 0.3
 
     // Timing thresholds
     var tapThreshold: Double = 0.15  // 150ms for tap detection
+    var minimumTapDuration: Double = 0.035  // Ignore ultra-short contact noise
     var maxTapHoldDuration: Double = 0.5  // 500ms max hold for tap (safety check)
     var moveThreshold: Float = 0.015  // Movement threshold for tap vs drag
+    var minimumTapFrameCount: Int = 2  // Require stable multi-frame contact before tap
 
     // Finger requirements
     @available(
@@ -74,6 +78,15 @@ public struct GestureConfiguration: Sendable {
 
     // Relift during drag - allow continuing drag with 2 fingers after lifting one
     var allowReliftDuringDrag: Bool = false
+
+    // Vertical swipe passthrough - reserve clearly vertical 3-finger swipes for apps
+    // such as AltTab while still allowing MiddleDrag taps and non-vertical drags.
+    var passThroughVerticalSwipes: Bool = false
+    var verticalSwipeThreshold: Float = 0.06
+    var verticalSwipeDominanceRatio: Float = 1.8
+
+    // App passthrough - reserve all 3-finger gestures for known gesture-driven apps.
+    var passThroughAltTab: Bool = false
 
     // Title bar passthrough - pass gesture to system when cursor is over window title bar
     // This allows macOS native three-finger drag to work for window dragging
@@ -241,6 +254,12 @@ public struct UserPreferences: Codable, Sendable {
     // Relift during drag - allow continuing drag with 2 fingers after lifting one
     var allowReliftDuringDrag: Bool = false
 
+    // Vertical swipe passthrough - reserve clearly vertical 3-finger swipes for apps like AltTab
+    var passThroughVerticalSwipes: Bool = false
+
+    // AltTab passthrough - ignore MiddleDrag while the AltTab switcher is under cursor
+    var passThroughAltTab: Bool = false
+
     // Title bar passthrough - pass gesture to system when cursor is over window title bar
     var passThroughTitleBar: Bool = false
     var titleBarHeight: Double = 28  // Height of title bar region in pixels
@@ -277,6 +296,8 @@ public struct UserPreferences: Codable, Sendable {
             minimumWindowHeight: CGFloat(minimumWindowHeight),
             ignoreDesktop: ignoreDesktop,
             allowReliftDuringDrag: allowReliftDuringDrag,
+            passThroughVerticalSwipes: passThroughVerticalSwipes,
+            passThroughAltTab: passThroughAltTab,
             passThroughTitleBar: passThroughTitleBar,
             titleBarHeight: CGFloat(titleBarHeight)
         )

@@ -339,6 +339,56 @@ final class WindowHelperTests: XCTestCase {
         XCTAssertTrue(result, "Should return true when point is outside all windows")
     }
 
+    // MARK: - App Window Passthrough Tests
+
+    func testIsPointOverAppWindowOwnedByMatchesOwner() {
+        let mockWindows = [
+            createMockWindow(
+                x: 100, y: 100, width: 400, height: 300, layer: 18,
+                ownerName: "AltTab", windowID: 123)
+        ]
+
+        let result = WindowHelper.isPoint(
+            CGPoint(x: 200, y: 200),
+            overAppWindowOwnedBy: ["AltTab"],
+            windowList: mockWindows
+        )
+
+        XCTAssertTrue(result)
+    }
+
+    func testIsPointOverAppWindowOwnedByIgnoresOtherOwners() {
+        let mockWindows = [
+            createMockWindow(
+                x: 100, y: 100, width: 400, height: 300,
+                ownerName: "OtherApp", windowID: 123)
+        ]
+
+        let result = WindowHelper.isPoint(
+            CGPoint(x: 200, y: 200),
+            overAppWindowOwnedBy: ["AltTab"],
+            windowList: mockWindows
+        )
+
+        XCTAssertFalse(result)
+    }
+
+    func testIsPointOverAppWindowOwnedByRequiresPointInsideWindow() {
+        let mockWindows = [
+            createMockWindow(
+                x: 100, y: 100, width: 400, height: 300,
+                ownerName: "AltTab", windowID: 123)
+        ]
+
+        let result = WindowHelper.isPoint(
+            CGPoint(x: 50, y: 50),
+            overAppWindowOwnedBy: ["AltTab"],
+            windowList: mockWindows
+        )
+
+        XCTAssertFalse(result)
+    }
+
     // MARK: - WindowID-Based Bundle ID Lookup Tests
 
     func testGetWindowAt_WithMockData_OverlappingWindows_UsesWindowIDForBundleLookup() {

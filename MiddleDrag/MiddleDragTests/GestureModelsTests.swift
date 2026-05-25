@@ -240,6 +240,33 @@ final class GestureModelsTests: XCTestCase {
         XCTAssertTrue(config.allowReliftDuringDrag)
     }
 
+    // MARK: - Vertical Swipe Passthrough Tests
+
+    func testDefaultGestureConfigurationVerticalSwipePassthroughFields() {
+        let config = GestureConfiguration()
+        XCTAssertFalse(config.passThroughVerticalSwipes)
+        XCTAssertEqual(config.verticalSwipeThreshold, 0.06)
+        XCTAssertEqual(config.verticalSwipeDominanceRatio, 1.8)
+        XCTAssertFalse(config.passThroughAltTab)
+    }
+
+    func testDefaultUserPreferencesVerticalSwipePassthroughField() {
+        let prefs = UserPreferences()
+        XCTAssertFalse(prefs.passThroughVerticalSwipes)
+        XCTAssertFalse(prefs.passThroughAltTab)
+    }
+
+    func testUserPreferencesToGestureConfigVerticalSwipePassthroughMapping() {
+        var prefs = UserPreferences()
+        prefs.passThroughVerticalSwipes = true
+        prefs.passThroughAltTab = true
+
+        let config = prefs.gestureConfig
+
+        XCTAssertTrue(config.passThroughVerticalSwipes)
+        XCTAssertTrue(config.passThroughAltTab)
+    }
+
     // MARK: - Ignore Desktop Filter Tests
 
     func testDefaultGestureConfigurationIgnoreDesktopField() {

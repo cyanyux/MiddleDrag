@@ -310,6 +310,20 @@ public class MenuBarController: NSObject {
         )
         submenu.addItem(windowBarDragItem)
 
+        let verticalSwipeItem = createAdvancedMenuItem(
+            title: "Pass Through Vertical Swipes",
+            isOn: preferences.passThroughVerticalSwipes,
+            action: #selector(toggleVerticalSwipePassthrough)
+        )
+        submenu.addItem(verticalSwipeItem)
+
+        let altTabItem = createAdvancedMenuItem(
+            title: "Pass Through AltTab Switcher",
+            isOn: preferences.passThroughAltTab,
+            action: #selector(toggleAltTabPassthrough)
+        )
+        submenu.addItem(altTabItem)
+
         submenu.addItem(NSMenuItem.separator())
 
         // Relift during drag - Linux-style text selection
@@ -752,6 +766,28 @@ public class MenuBarController: NSObject {
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
+    @objc func toggleVerticalSwipePassthrough() {
+        preferences.passThroughVerticalSwipes.toggle()
+
+        var config = multitouchManager?.configuration ?? GestureConfiguration()
+        config.passThroughVerticalSwipes = preferences.passThroughVerticalSwipes
+        multitouchManager?.updateConfiguration(config)
+
+        buildMenu()
+        NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
+    }
+
+    @objc func toggleAltTabPassthrough() {
+        preferences.passThroughAltTab.toggle()
+
+        var config = multitouchManager?.configuration ?? GestureConfiguration()
+        config.passThroughAltTab = preferences.passThroughAltTab
+        multitouchManager?.updateConfiguration(config)
+
+        buildMenu()
+        NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
+    }
+
     @objc func toggleAllowReliftDuringDrag() {
         preferences.allowReliftDuringDrag.toggle()
 
@@ -882,4 +918,3 @@ extension Notification.Name {
     /// Posted when device polling times out without finding a device
     public static let middleDragPollingTimedOut = Notification.Name("MiddleDragPollingTimedOut")
 }
-
