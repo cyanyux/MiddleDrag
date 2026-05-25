@@ -244,16 +244,16 @@ final class GestureModelsTests: XCTestCase {
 
     func testDefaultGestureConfigurationVerticalSwipePassthroughFields() {
         let config = GestureConfiguration()
-        XCTAssertFalse(config.passThroughVerticalSwipes)
+        XCTAssertTrue(config.passThroughVerticalSwipes)
         XCTAssertEqual(config.verticalSwipeThreshold, 0.06)
         XCTAssertEqual(config.verticalSwipeDominanceRatio, 1.8)
-        XCTAssertFalse(config.passThroughAltTab)
+        XCTAssertTrue(config.passThroughAltTab)
     }
 
     func testDefaultUserPreferencesVerticalSwipePassthroughField() {
         let prefs = UserPreferences()
-        XCTAssertFalse(prefs.passThroughVerticalSwipes)
-        XCTAssertFalse(prefs.passThroughAltTab)
+        XCTAssertTrue(prefs.passThroughVerticalSwipes)
+        XCTAssertTrue(prefs.passThroughAltTab)
     }
 
     func testUserPreferencesToGestureConfigVerticalSwipePassthroughMapping() {

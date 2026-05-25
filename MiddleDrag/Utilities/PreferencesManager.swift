@@ -90,9 +90,9 @@ public final class PreferencesManager: @unchecked Sendable {
             // Relift during drag default
             Keys.allowReliftDuringDrag: false,
             // Vertical swipe passthrough default
-            Keys.passThroughVerticalSwipes: false,
+            Keys.passThroughVerticalSwipes: true,
             // App passthrough defaults
-            Keys.passThroughAltTab: false,
+            Keys.passThroughAltTab: true,
             // Gesture configuration prompt tracking
             Keys.hasShownGestureConfigurationPrompt: false,
             // Hotkey defaults

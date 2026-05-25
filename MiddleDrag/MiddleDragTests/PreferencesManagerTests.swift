@@ -204,8 +204,8 @@ final class PreferencesManagerTests: XCTestCase {
     func testLoadPreferencesVerticalSwipePassthroughDefault() {
         let prefs = preferencesManager.loadPreferences()
 
-        XCTAssertFalse(prefs.passThroughVerticalSwipes)
-        XCTAssertFalse(prefs.passThroughAltTab)
+        XCTAssertTrue(prefs.passThroughVerticalSwipes)
+        XCTAssertTrue(prefs.passThroughAltTab)
     }
 
     func testSaveAndLoadVerticalSwipePassthroughPreference() {

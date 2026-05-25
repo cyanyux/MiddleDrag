@@ -81,12 +81,12 @@ public struct GestureConfiguration: Sendable {
 
     // Vertical swipe passthrough - reserve clearly vertical 3-finger swipes for apps
     // such as AltTab while still allowing MiddleDrag taps and non-vertical drags.
-    var passThroughVerticalSwipes: Bool = false
+    var passThroughVerticalSwipes: Bool = true
     var verticalSwipeThreshold: Float = 0.06
     var verticalSwipeDominanceRatio: Float = 1.8
 
     // App passthrough - reserve all 3-finger gestures for known gesture-driven apps.
-    var passThroughAltTab: Bool = false
+    var passThroughAltTab: Bool = true
 
     // Title bar passthrough - pass gesture to system when cursor is over window title bar
     // This allows macOS native three-finger drag to work for window dragging
@@ -255,10 +255,10 @@ public struct UserPreferences: Codable, Sendable {
     var allowReliftDuringDrag: Bool = false
 
     // Vertical swipe passthrough - reserve clearly vertical 3-finger swipes for apps like AltTab
-    var passThroughVerticalSwipes: Bool = false
+    var passThroughVerticalSwipes: Bool = true
 
     // AltTab passthrough - ignore MiddleDrag while the AltTab switcher is under cursor
-    var passThroughAltTab: Bool = false
+    var passThroughAltTab: Bool = true
 
     // Title bar passthrough - pass gesture to system when cursor is over window title bar
     var passThroughTitleBar: Bool = false
