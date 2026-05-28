@@ -2074,6 +2074,67 @@ final class MultitouchManagerTests: XCTestCase {
             result, "Physical left click with 3 fingers should be suppressed (Force Click)")
     }
 
+    func testProcessEventDoesNotInterceptForceClickWhenAltTabPassthroughActive() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { true })
+
+        manager.currentFingerCount = 3
+        manager.currentFingerCount = 3
+
+        let downEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let downResult = unsafe manager.processEvent(downEvent, type: .leftMouseDown)
+        unsafe XCTAssertNotNil(
+            downResult,
+            "Left click over AltTab should pass through instead of becoming middle click")
+
+        let upEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let upResult = unsafe manager.processEvent(upEvent, type: .leftMouseUp)
+        unsafe XCTAssertNotNil(
+            upResult,
+            "Mouse-up over AltTab should pass through when mouse-down was not converted")
+    }
+
+    func testProcessEventStillInterceptsForceClickWhenAltTabPassthroughDisabled() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var appCheckCount = 0
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: {
+                appCheckCount += 1
+                return true
+            })
+
+        var config = GestureConfiguration()
+        config.passThroughAltTab = false
+        manager.updateConfiguration(config)
+
+        manager.currentFingerCount = 3
+        manager.currentFingerCount = 3
+
+        let event = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let result = unsafe manager.processEvent(event, type: .leftMouseDown)
+
+        unsafe XCTAssertNil(
+            result,
+            "Disabling AltTab passthrough should keep normal force-click conversion behavior")
+        XCTAssertEqual(appCheckCount, 0, "Disabled AltTab passthrough should not query app state")
+    }
+
     func testProcessEventDoesNotInterceptForceClickWhenTapToClickDisabled() throws {
         try requireCGEventTestsEnabled()
         let mockDevice = unsafe MockDeviceMonitor()
@@ -2229,6 +2290,877 @@ final class MultitouchManagerTests: XCTestCase {
 
         // Should be suppressed
         unsafe XCTAssertNil(result)
+    }
+
+    func testProcessEventSuppressesNativeClickDuringActiveDragEvenWhenAltTabAppears() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        var appCheckCount = 0
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: {
+                appCheckCount += 1
+                return altTabVisible
+            })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+        manager.gestureRecognizerDidBeginDragging(recognizer)
+
+        let dragExpectation = XCTestExpectation(description: "Drag active")
+        DispatchQueue.main.async {
+            XCTAssertTrue(manager.isActivelyDragging)
+            dragExpectation.fulfill()
+        }
+        wait(for: [dragExpectation], timeout: 1.0)
+
+        altTabVisible = true
+        let checksBeforeClick = appCheckCount
+
+        let event = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let result = unsafe manager.processEvent(event, type: .leftMouseDown)
+
+        unsafe XCTAssertNil(
+            result,
+            "Native left-clicks must remain suppressed while a middle-drag is active")
+        XCTAssertEqual(
+            appCheckCount,
+            checksBeforeClick,
+            "Active drag suppression should not consult AltTab passthrough")
+    }
+
+    func testProcessEventSuppressesNativeDragDuringForceClickWhenAltTabAppears() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        var appCheckCount = 0
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: {
+                appCheckCount += 1
+                return altTabVisible
+            })
+
+        manager.currentFingerCount = 3
+        manager.currentFingerCount = 3
+
+        let downEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let downResult = unsafe manager.processEvent(downEvent, type: .leftMouseDown)
+        unsafe XCTAssertNil(downResult, "Stable three-finger mouse-down should be converted")
+        let checksAfterDown = appCheckCount
+
+        altTabVisible = true
+
+        let dragEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let dragResult = unsafe manager.processEvent(dragEvent, type: .leftMouseDragged)
+
+        unsafe XCTAssertNil(
+            dragResult,
+            "Native left-dragged events must stay suppressed during force-click conversion")
+        XCTAssertEqual(
+            appCheckCount,
+            checksAfterDown,
+            "Force-click drag suppression should not consult AltTab passthrough")
+    }
+
+    func testProcessEventDoesNotCheckAltTabForDraggedEvents() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var appCheckCount = 0
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: {
+                appCheckCount += 1
+                return true
+            })
+
+        let dragEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let result = unsafe manager.processEvent(dragEvent, type: .leftMouseDragged)
+
+        unsafe XCTAssertNotNil(result)
+        XCTAssertEqual(appCheckCount, 0, "Dragged events should not perform AltTab window checks")
+    }
+
+    func testProcessEventPassesNativeClickWhenAltTabAppearsDuringActiveGesture() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+
+        let startExpectation = XCTestExpectation(description: "State update")
+        DispatchQueue.main.async {
+            XCTAssertTrue(manager.isInThreeFingerGesture)
+            startExpectation.fulfill()
+        }
+        wait(for: [startExpectation], timeout: 1.0)
+
+        altTabVisible = true
+
+        let event = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let result = unsafe manager.processEvent(event, type: .leftMouseDown)
+
+        unsafe XCTAssertNotNil(
+            result,
+            "Native clicks should pass through if AltTab appears after the gesture starts")
+    }
+
+    func testAltTabMouseDownDuringGesturePreventsLaterSyntheticTapAfterAltTabCloses() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+
+        let startExpectation = XCTestExpectation(description: "Gesture active")
+        DispatchQueue.main.async {
+            XCTAssertTrue(manager.isInThreeFingerGesture)
+            startExpectation.fulfill()
+        }
+        wait(for: [startExpectation], timeout: 1.0)
+
+        altTabVisible = true
+
+        let altTabDown = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let downResult = unsafe manager.processEvent(altTabDown, type: .leftMouseDown)
+
+        unsafe XCTAssertNotNil(downResult)
+        XCTAssertTrue(manager.isGesturePassthroughActiveForTesting)
+
+        altTabVisible = false
+        manager.gestureRecognizerDidTap(recognizer)
+
+        let tapExpectation = XCTestExpectation(description: "Passthrough tap skipped")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isInThreeFingerGesture)
+            XCTAssertFalse(manager.isActivelyDragging)
+            tapExpectation.fulfill()
+        }
+        wait(for: [tapExpectation], timeout: 1.0)
+
+        Thread.sleep(forTimeInterval: 0.20)
+
+        let followup = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let followupResult = unsafe manager.processEvent(followup, type: .leftMouseDown)
+
+        unsafe XCTAssertNotNil(
+            followupResult,
+            "Tap handling after an AltTab mouse-down passthrough must not synthesize a middle click")
+    }
+
+    func testAltTabClickPassesDuringPostGestureAftermathWindow() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+        manager.gestureRecognizerDidTap(recognizer)
+
+        let tapExpectation = XCTestExpectation(description: "Middle tap completed")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isInThreeFingerGesture)
+            tapExpectation.fulfill()
+        }
+        wait(for: [tapExpectation], timeout: 1.0)
+
+        altTabVisible = true
+
+        let event = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let result = unsafe manager.processEvent(event, type: .leftMouseDown)
+
+        unsafe XCTAssertNotNil(
+            result,
+            "AltTab should receive the click even during the normal post-gesture suppression window")
+    }
+
+    func testAltTabMouseDragPassesAfterAltTabMouseDownDuringSuppression() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+        manager.gestureRecognizerDidTap(recognizer)
+
+        let tapExpectation = XCTestExpectation(description: "Middle tap completed")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isInThreeFingerGesture)
+            tapExpectation.fulfill()
+        }
+        wait(for: [tapExpectation], timeout: 1.0)
+
+        altTabVisible = true
+
+        let downEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let downResult = unsafe manager.processEvent(downEvent, type: .leftMouseDown)
+        unsafe XCTAssertNotNil(downResult)
+
+        let dragEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let dragResult = unsafe manager.processEvent(dragEvent, type: .leftMouseDragged)
+
+        unsafe XCTAssertNotNil(
+            dragResult,
+            "AltTab should receive drag events for a mouse session that began over AltTab")
+    }
+
+    func testTapDoesNotMiddleClickWhenAltTabAppearsAfterGestureStart() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+
+        let startExpectation = XCTestExpectation(description: "Gesture active")
+        DispatchQueue.main.async {
+            XCTAssertTrue(manager.isInThreeFingerGesture)
+            startExpectation.fulfill()
+        }
+        wait(for: [startExpectation], timeout: 1.0)
+
+        altTabVisible = true
+        manager.gestureRecognizerDidTap(recognizer)
+
+        let tapExpectation = XCTestExpectation(description: "Tap skipped")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isInThreeFingerGesture)
+            tapExpectation.fulfill()
+        }
+        wait(for: [tapExpectation], timeout: 1.0)
+
+        altTabVisible = false
+
+        let event = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let result = unsafe manager.processEvent(event, type: .leftMouseDown)
+
+        unsafe XCTAssertNotNil(
+            result,
+            "A tap skipped for AltTab should not leave post-middle-click suppression active")
+    }
+
+    func testTapAfterAltTabDismissesUnlatchesWithoutPerformingTap() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = true
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+        XCTAssertTrue(manager.isGesturePassthroughActiveForTesting)
+
+        altTabVisible = false
+        manager.gestureRecognizerDidTap(recognizer)
+
+        let tapExpectation = XCTestExpectation(description: "Tap completed")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isGesturePassthroughActiveForTesting)
+            XCTAssertFalse(manager.isInThreeFingerGesture)
+            XCTAssertFalse(manager.isActivelyDragging)
+            tapExpectation.fulfill()
+        }
+        wait(for: [tapExpectation], timeout: 1.0)
+
+        let event = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let result = unsafe manager.processEvent(event, type: .leftMouseDown)
+
+        unsafe XCTAssertNotNil(
+            result,
+            "A gesture that started over AltTab should not synthesize a middle click after AltTab dismisses")
+    }
+
+    func testBeginDraggingAfterAltTabDismissesDoesNotStartDragForAltTabStartedGesture() throws {
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = true
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+        XCTAssertTrue(manager.isGesturePassthroughActiveForTesting)
+
+        altTabVisible = false
+        manager.gestureRecognizerDidBeginDragging(recognizer)
+
+        let dragExpectation = XCTestExpectation(description: "Drag skipped")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isGesturePassthroughActiveForTesting)
+            XCTAssertFalse(manager.isInThreeFingerGesture)
+            XCTAssertFalse(manager.isActivelyDragging)
+            dragExpectation.fulfill()
+        }
+        wait(for: [dragExpectation], timeout: 1.0)
+    }
+
+    func testAltTabTapClearsCompletedForceClickSuppression() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        manager.currentFingerCount = 3
+        manager.currentFingerCount = 3
+
+        let convertedDownEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let convertedDownResult = unsafe manager.processEvent(convertedDownEvent, type: .leftMouseDown)
+        unsafe XCTAssertNil(convertedDownResult, "Stable three-finger mouse-down should be converted")
+
+        let convertedUpEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let convertedUpResult = unsafe manager.processEvent(convertedUpEvent, type: .leftMouseUp)
+        unsafe XCTAssertNil(convertedUpResult, "Converted force-click mouse-up should be suppressed")
+
+        altTabVisible = true
+        manager.gestureRecognizerDidTap(GestureRecognizer())
+
+        let tapExpectation = XCTestExpectation(description: "AltTab tap skipped")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isInThreeFingerGesture)
+            XCTAssertFalse(manager.isActivelyDragging)
+            XCTAssertEqual(manager.lastForceClickTimeForTesting, 0)
+            tapExpectation.fulfill()
+        }
+        wait(for: [tapExpectation], timeout: 1.0)
+
+        altTabVisible = false
+
+        let followupEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let followupResult = unsafe manager.processEvent(followupEvent, type: .leftMouseDown)
+
+        unsafe XCTAssertNotNil(
+            followupResult,
+            "AltTab tap cleanup should not swallow a later native click after conversion ended")
+    }
+
+    func testDragSkippedForAltTabDoesNotSuppressClickAfterOverlayCloses() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+
+        let startExpectation = XCTestExpectation(description: "Gesture active")
+        DispatchQueue.main.async {
+            XCTAssertTrue(manager.isInThreeFingerGesture)
+            startExpectation.fulfill()
+        }
+        wait(for: [startExpectation], timeout: 1.0)
+
+        altTabVisible = true
+        manager.gestureRecognizerDidBeginDragging(recognizer)
+
+        let skipExpectation = XCTestExpectation(description: "AltTab drag skipped")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isInThreeFingerGesture)
+            XCTAssertFalse(manager.isActivelyDragging)
+            skipExpectation.fulfill()
+        }
+        wait(for: [skipExpectation], timeout: 1.0)
+
+        altTabVisible = false
+        manager.currentFingerCount = 3
+        manager.currentFingerCount = 3
+        manager.gestureRecognizerDidEndDragging(recognizer)
+
+        let event = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let result = unsafe manager.processEvent(event, type: .leftMouseDown)
+
+        unsafe XCTAssertNotNil(
+            result,
+            "A drag skipped for AltTab should not leave post-middle-drag suppression active")
+    }
+
+    func testPassthroughEndFromActiveDragKeepsAftermathSuppression() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+        manager.gestureRecognizerDidBeginDragging(recognizer)
+
+        let dragExpectation = XCTestExpectation(description: "Drag active")
+        DispatchQueue.main.async {
+            XCTAssertTrue(manager.isInThreeFingerGesture)
+            XCTAssertTrue(manager.isActivelyDragging)
+            dragExpectation.fulfill()
+        }
+        wait(for: [dragExpectation], timeout: 1.0)
+
+        altTabVisible = true
+        let gestureData = GestureData(
+            centroid: MTPoint(x: 0.55, y: 0.55),
+            velocity: MTPoint(x: 0.1, y: 0.1),
+            pressure: 1.0,
+            fingerCount: 3,
+            startPosition: MTPoint(x: 0.5, y: 0.5),
+            lastPosition: MTPoint(x: 0.5, y: 0.5)
+        )
+        manager.gestureRecognizerDidUpdateDragging(recognizer, with: gestureData)
+
+        altTabVisible = false
+        manager.gestureRecognizerDidEndDragging(recognizer)
+
+        let event = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let result = unsafe manager.processEvent(event, type: .leftMouseDown)
+
+        unsafe XCTAssertNil(
+            result,
+            "A drag that was active before AltTab passthrough should keep aftermath suppression")
+    }
+
+    func testTitleBarPassthroughEndDoesNotSuppressNextForceClickConversion() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true })
+
+        manager.setTitleBarPassthroughForTesting()
+        manager.gestureRecognizerDidEndDragging(GestureRecognizer())
+
+        let endExpectation = XCTestExpectation(description: "Title-bar passthrough cleared")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isGesturePassthroughActiveForTesting)
+            endExpectation.fulfill()
+        }
+        wait(for: [endExpectation], timeout: 1.0)
+
+        manager.currentFingerCount = 3
+        manager.currentFingerCount = 3
+
+        let event = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let result = unsafe manager.processEvent(event, type: .leftMouseDown)
+
+        unsafe XCTAssertNil(
+            result,
+            "Title-bar passthrough should not arm AltTab-only force-click suppression")
+    }
+
+    func testUpdateDraggingCanResumeAfterMidDragAltTabDismisses() throws {
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+        manager.gestureRecognizerDidBeginDragging(recognizer)
+
+        let dragExpectation = XCTestExpectation(description: "Drag active")
+        DispatchQueue.main.async {
+            XCTAssertTrue(manager.isInThreeFingerGesture)
+            XCTAssertTrue(manager.isActivelyDragging)
+            dragExpectation.fulfill()
+        }
+        wait(for: [dragExpectation], timeout: 1.0)
+
+        let gestureData = GestureData(
+            centroid: MTPoint(x: 0.55, y: 0.55),
+            velocity: MTPoint(x: 0.1, y: 0.1),
+            pressure: 1.0,
+            fingerCount: 3,
+            startPosition: MTPoint(x: 0.5, y: 0.5),
+            lastPosition: MTPoint(x: 0.5, y: 0.5)
+        )
+
+        altTabVisible = true
+        manager.gestureRecognizerDidUpdateDragging(recognizer, with: gestureData)
+
+        let takeoverExpectation = XCTestExpectation(description: "AltTab takeover")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isInThreeFingerGesture)
+            XCTAssertFalse(manager.isActivelyDragging)
+            takeoverExpectation.fulfill()
+        }
+        wait(for: [takeoverExpectation], timeout: 1.0)
+        XCTAssertTrue(manager.isGesturePassthroughActiveForTesting)
+
+        Thread.sleep(forTimeInterval: 0.12)
+        altTabVisible = false
+        manager.gestureRecognizerDidUpdateDragging(recognizer, with: gestureData)
+
+        let resumeExpectation = XCTestExpectation(description: "Drag resumed")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isGesturePassthroughActiveForTesting)
+            XCTAssertTrue(manager.isInThreeFingerGesture)
+            XCTAssertTrue(manager.isActivelyDragging)
+            resumeExpectation.fulfill()
+        }
+        wait(for: [resumeExpectation], timeout: 1.0)
+    }
+
+    func testUpdateDraggingThrottlesAltTabWindowChecks() throws {
+        let mockDevice = unsafe MockDeviceMonitor()
+        var appCheckCount = 0
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: {
+                appCheckCount += 1
+                return false
+            })
+
+        let recognizer = GestureRecognizer()
+        let gestureData = GestureData(
+            centroid: MTPoint(x: 0.55, y: 0.55),
+            velocity: MTPoint(x: 0.1, y: 0.1),
+            pressure: 1.0,
+            fingerCount: 3,
+            startPosition: MTPoint(x: 0.5, y: 0.5),
+            lastPosition: MTPoint(x: 0.5, y: 0.5)
+        )
+
+        manager.gestureRecognizerDidUpdateDragging(recognizer, with: gestureData)
+        manager.gestureRecognizerDidUpdateDragging(recognizer, with: gestureData)
+
+        XCTAssertEqual(appCheckCount, 1, "Drag updates should not query AltTab window state every frame")
+    }
+
+    func testPassthroughEndAsyncClearDoesNotStompNewGesturePassthrough() throws {
+        let mockDevice = unsafe MockDeviceMonitor()
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { true })
+
+        let firstRecognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(firstRecognizer, at: MTPoint(x: 0, y: 0))
+        XCTAssertTrue(manager.isGesturePassthroughActiveForTesting)
+
+        manager.gestureRecognizerDidEndDragging(firstRecognizer)
+        XCTAssertTrue(manager.isGesturePassthroughActiveForTesting)
+
+        let secondRecognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(secondRecognizer, at: MTPoint(x: 0, y: 0))
+        XCTAssertTrue(manager.isGesturePassthroughActiveForTesting)
+
+        let clearExpectation = XCTestExpectation(description: "Stale passthrough clear drained")
+        DispatchQueue.main.async {
+            XCTAssertTrue(
+                manager.isGesturePassthroughActiveForTesting,
+                "A queued clear from the previous gesture must not clear the new gesture")
+            clearExpectation.fulfill()
+        }
+        wait(for: [clearExpectation], timeout: 1.0)
+    }
+
+    func testAltTabTapPreservesPriorGestureAftermathSuppression() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+        manager.gestureRecognizerDidBeginDragging(recognizer)
+        manager.gestureRecognizerDidEndDragging(recognizer)
+
+        let endExpectation = XCTestExpectation(description: "Drag ended")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isInThreeFingerGesture)
+            XCTAssertFalse(manager.isActivelyDragging)
+            endExpectation.fulfill()
+        }
+        wait(for: [endExpectation], timeout: 1.0)
+
+        altTabVisible = true
+        manager.gestureRecognizerDidTap(recognizer)
+
+        let tapExpectation = XCTestExpectation(description: "AltTab tap skipped")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isInThreeFingerGesture)
+            XCTAssertFalse(manager.isActivelyDragging)
+            tapExpectation.fulfill()
+        }
+        wait(for: [tapExpectation], timeout: 1.0)
+
+        altTabVisible = false
+
+        let event = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let result = unsafe manager.processEvent(event, type: .leftMouseDown)
+
+        unsafe XCTAssertNil(
+            result,
+            "AltTab passthrough cleanup must not clear a prior active gesture aftermath window")
+    }
+
+    func testAltTabTapDoesNotClearNormalMiddleTapNativeSuppression() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+        manager.gestureRecognizerDidTap(recognizer)
+
+        let tapExpectation = XCTestExpectation(description: "Normal tap completed")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isInThreeFingerGesture)
+            XCTAssertFalse(manager.isActivelyDragging)
+            tapExpectation.fulfill()
+        }
+        wait(for: [tapExpectation], timeout: 1.0)
+
+        Thread.sleep(forTimeInterval: 0.20)
+
+        altTabVisible = true
+        manager.gestureRecognizerDidTap(recognizer)
+
+        let altTabExpectation = XCTestExpectation(description: "AltTab tap skipped")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isInThreeFingerGesture)
+            XCTAssertFalse(manager.isActivelyDragging)
+            altTabExpectation.fulfill()
+        }
+        wait(for: [altTabExpectation], timeout: 1.0)
+
+        altTabVisible = false
+
+        let event = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let result = unsafe manager.processEvent(event, type: .leftMouseDown)
+
+        unsafe XCTAssertNil(
+            result,
+            "AltTab cleanup must not clear native suppression from a normal middle tap")
+    }
+
+    func testPassthroughStateIsClearedOnStop() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = true
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { altTabVisible })
+
+        manager.start()
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+
+        manager.stop()
+
+        altTabVisible = false
+        manager.currentFingerCount = 3
+        manager.currentFingerCount = 3
+
+        let event = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+
+        let result = unsafe manager.processEvent(event, type: .leftMouseDown)
+
+        unsafe XCTAssertNil(
+            result,
+            "Force-click conversion should work after stop clears passthrough state")
+    }
+
+    func testToggleDisabledClearsAltTabMousePassthroughState() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { true })
+
+        manager.start()
+
+        let downEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let downResult = unsafe manager.processEvent(downEvent, type: .leftMouseDown)
+        unsafe XCTAssertNotNil(downResult)
+        XCTAssertTrue(manager.isAppMousePassthroughActiveForTesting)
+
+        manager.toggleEnabled()
+
+        XCTAssertFalse(manager.isAppMousePassthroughActiveForTesting)
+        XCTAssertFalse(manager.isGesturePassthroughActiveForTesting)
+    }
+
+    func testForceReleaseClearsAltTabPassthroughState() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { true })
+
+        let recognizer = GestureRecognizer()
+        manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
+        XCTAssertTrue(manager.isGesturePassthroughActiveForTesting)
+
+        let downEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let downResult = unsafe manager.processEvent(downEvent, type: .leftMouseDown)
+        unsafe XCTAssertNotNil(downResult)
+        XCTAssertTrue(manager.isAppMousePassthroughActiveForTesting)
+
+        manager.forceReleaseStuckDrag()
+
+        let releaseExpectation = XCTestExpectation(description: "Force release completed")
+        DispatchQueue.main.async {
+            XCTAssertFalse(manager.isGesturePassthroughActiveForTesting)
+            XCTAssertFalse(manager.isAppMousePassthroughActiveForTesting)
+            releaseExpectation.fulfill()
+        }
+        wait(for: [releaseExpectation], timeout: 1.0)
+    }
+
+    func testCancelClearsAltTabMousePassthroughState() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: { true })
+
+        let downEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let downResult = unsafe manager.processEvent(downEvent, type: .leftMouseDown)
+        unsafe XCTAssertNotNil(downResult)
+        XCTAssertTrue(manager.isAppMousePassthroughActiveForTesting)
+
+        manager.gestureRecognizerDidCancelDragging(GestureRecognizer())
+
+        XCTAssertFalse(manager.isAppMousePassthroughActiveForTesting)
+        XCTAssertFalse(manager.isGesturePassthroughActiveForTesting)
+    }
+
+    func testAltTabMouseUpPassthroughRequiresAltTabMouseDown() throws {
+        try requireCGEventTestsEnabled()
+        let mockDevice = unsafe MockDeviceMonitor()
+        var altTabVisible = false
+        var appCheckCount = 0
+        let manager = MultitouchManager(
+            deviceProviderFactory: { unsafe mockDevice },
+            eventTapSetup: { true },
+            appPassthroughCheck: {
+                appCheckCount += 1
+                return altTabVisible
+            })
+
+        let downEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let downResult = unsafe manager.processEvent(downEvent, type: .leftMouseDown)
+        unsafe XCTAssertNotNil(downResult)
+
+        altTabVisible = true
+
+        let upEvent = CGEvent(
+            mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: CGPoint.zero,
+            mouseButton: .left)!
+        let upResult = unsafe manager.processEvent(upEvent, type: .leftMouseUp)
+
+        unsafe XCTAssertNotNil(upResult)
+        XCTAssertEqual(
+            appCheckCount, 1,
+            "AltTab visibility should not reroute mouse-up unless mouse-down used AltTab passthrough")
     }
 
     // MARK: - Modifier Key Event Suppression Tests

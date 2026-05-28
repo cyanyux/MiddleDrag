@@ -37,7 +37,12 @@ public final class MultitouchManager: @unchecked Sendable {
     // MARK: - Properties
 
     /// Current gesture configuration
-    var configuration = GestureConfiguration()
+    private let configurationLock = NSLock()
+    private var _configuration = GestureConfiguration()
+    var configuration: GestureConfiguration {
+        get { configurationLock.withLock { _configuration } }
+        set { configurationLock.withLock { _configuration = newValue } }
+    }
 
     /// Whether gesture recognition is enabled
     private(set) var isEnabled = false
@@ -56,9 +61,52 @@ public final class MultitouchManager: @unchecked Sendable {
     private var gestureEndTime: Double = 0
     // Whether the last gesture that ended was actually active (not cancelled)
     private var lastGestureWasActive: Bool = false
-    // Whether current gesture should pass through to system (e.g., title bar drag)
-    // Set at gesture start and checked in all delegate methods
-    private var shouldPassThroughCurrentGesture: Bool = false
+    private enum GesturePassthroughReason {
+        case none
+        case app
+        case titleBar
+    }
+
+    // Whether current gesture should pass through to system (e.g., title bar drag).
+    // Protected because gesture callbacks run on the gesture queue while the event tap
+    // reads this state on the main run loop.
+    private let gesturePassthroughLock = NSLock()
+    private var _gesturePassthroughReason: GesturePassthroughReason = .none
+    private var _gesturePassthroughGeneration: UInt64 = 0
+    private var _appPassthroughGestureCanResume = false
+    private var _appPassthroughWasActiveDrag = false
+    private var currentGesturePassthroughReason: GesturePassthroughReason {
+        get { gesturePassthroughLock.withLock { _gesturePassthroughReason } }
+        set {
+            gesturePassthroughLock.withLock {
+                _gesturePassthroughGeneration &+= 1
+                _gesturePassthroughReason = newValue
+                _appPassthroughGestureCanResume = false
+                _appPassthroughWasActiveDrag = false
+            }
+        }
+    }
+    private var shouldPassThroughCurrentGesture: Bool {
+        currentGesturePassthroughReason != .none
+    }
+
+    #if DEBUG
+    var isGesturePassthroughActiveForTesting: Bool {
+        shouldPassThroughCurrentGesture
+    }
+
+    var isAppMousePassthroughActiveForTesting: Bool {
+        isAppMousePassthroughActive(at: CACurrentMediaTime())
+    }
+
+    var lastForceClickTimeForTesting: TimeInterval {
+        lastForceClickTime
+    }
+
+    func setTitleBarPassthroughForTesting() {
+        currentGesturePassthroughReason = .titleBar
+    }
+    #endif
     
     // Whether the force-click conversion (event tap) already performed a middle click
     // recently. When a physical trackpad click occurs with 3 fingers, the force-click
@@ -88,6 +136,18 @@ public final class MultitouchManager: @unchecked Sendable {
     private let nativeMouseSuppressionLock = NSLock()
     private var gestureStartMouseSuppressionUntil: TimeInterval = 0
     private var nativeMouseSuppressionUntil: TimeInterval = 0
+    private var forceClickNativeMouseSuppressionUntil: TimeInterval = 0
+    private var appPassthroughForceClickSuppressionUntil: TimeInterval = 0
+
+    private let appMousePassthroughLock = NSLock()
+    private var _appPassthroughLeftMouseDownActive = false
+    private var _appPassthroughLeftMouseDeadline: TimeInterval = 0
+    private let appMousePassthroughTimeout: TimeInterval = 10.0
+
+    private let appPassthroughCheckCacheLock = NSLock()
+    private var appPassthroughLastCheckTime: TimeInterval = 0
+    private var appPassthroughLastCheckResult = false
+    private let appPassthroughDragCheckInterval: TimeInterval = 0.1
 
     // Core components
     private let gestureRecognizer = GestureRecognizer()
@@ -100,6 +160,9 @@ public final class MultitouchManager: @unchecked Sendable {
     // Factory for setting up event tap (injectable for testing)
     // Returns true if setup succeeded, false otherwise
     private var eventTapSetupFactory: (() -> Bool)!
+
+    // Injectable for testing AltTab/app passthrough timing without relying on real window state.
+    private let appPassthroughCheck: (() -> Bool)?
 
     // Event tap for suppressing system-generated clicks during gestures
     private var eventTap: CFMachPort?
@@ -163,9 +226,11 @@ public final class MultitouchManager: @unchecked Sendable {
     ///                    Defaults to real setupEventTap() for production.
     init(
         deviceProviderFactory: (() -> TouchDeviceProviding)? = nil,
-        eventTapSetup: (() -> Bool)? = nil
+        eventTapSetup: (() -> Bool)? = nil,
+        appPassthroughCheck: (() -> Bool)? = nil
     ) {
         self.deviceProviderFactory = deviceProviderFactory ?? { unsafe DeviceMonitor() }
+        self.appPassthroughCheck = appPassthroughCheck
         gestureRecognizer.delegate = self
 
         // Set up event tap factory after self is available
@@ -538,6 +603,8 @@ public final class MultitouchManager: @unchecked Sendable {
         gestureEndTime = 0
         lastForceClickTime = 0
         forceClickConversionActive = false
+        currentGesturePassthroughReason = .none
+        clearAppPassthroughState()
         clearNativeMouseSuppression()
 
         deviceMonitor?.stop()
@@ -610,6 +677,8 @@ public final class MultitouchManager: @unchecked Sendable {
             gestureEndTime = 0
             lastForceClickTime = 0
             forceClickConversionActive = false
+            currentGesturePassthroughReason = .none
+            clearAppPassthroughState()
             clearNativeMouseSuppression()
         }
     }
@@ -617,7 +686,7 @@ public final class MultitouchManager: @unchecked Sendable {
     /// Update configuration
     public func updateConfiguration(_ config: GestureConfiguration) {
         configuration = config
-        applyConfiguration()
+        applyConfiguration(config)
     }
     
     /// Force release any stuck middle-drag state
@@ -636,6 +705,10 @@ public final class MultitouchManager: @unchecked Sendable {
             self.isInThreeFingerGesture = false
             self.gestureEndTime = CACurrentMediaTime()
             self.lastGestureWasActive = false
+            self.currentGesturePassthroughReason = .none
+            self.lastForceClickTime = 0
+            self.forceClickConversionActive = false
+            self.clearAppPassthroughState()
             self.clearNativeMouseSuppression()
             
             // Force send MIDDLE_UP unconditionally
@@ -755,12 +828,14 @@ public final class MultitouchManager: @unchecked Sendable {
         let userData = event.getIntegerValueField(.eventSourceUserData)
         let isOurEvent = userData == 0x4D44
 
+        let config = configuration
+
         // Check if modifier key is required and currently held
         // This ensures we only suppress events when a valid gesture is actually active
         let modifierFlags = CGEventSource.flagsState(.hidSystemState)
         let modifierKeyHeld: Bool
-        if configuration.requireModifierKey {
-            switch configuration.modifierKeyType {
+        if config.requireModifierKey {
+            switch config.modifierKeyType {
             case .shift:
                 modifierKeyHeld = modifierFlags.contains(.maskShift)
             case .control:
@@ -774,16 +849,50 @@ public final class MultitouchManager: @unchecked Sendable {
             modifierKeyHeld = true  // No modifier required, so always "held"
         }
 
+        let suppressionState = mouseSuppressionState(at: now)
+        let passthroughActive = shouldPassThroughCurrentGesture
+
         // Only consider gesture active if:
         // 1. We're actually in a three-finger gesture (flag set by delegate callbacks)
         // 2. AND modifier key requirement is met (if required)
+        // 3. AND the gesture has not been handed off to a passthrough owner
         // We use isInThreeFingerGesture and isActivelyDragging instead of checking
         // fingerCountSafe or gestureRecognizer.state directly, because those flags
         // are only set when a valid gesture actually starts (respecting modifier keys)
-        let gestureActive = modifierKeyHeld && (isInThreeFingerGesture || isActivelyDragging)
+        let gestureActive =
+            modifierKeyHeld
+            && !passthroughActive
+            && (isInThreeFingerGesture || isActivelyDragging)
 
         if isMiddleButton && isOurEvent {
             return unsafe Unmanaged.passUnretained(event)
+        }
+
+        if isLeftButton && !isOurEvent {
+            let appMousePassthroughActive = isAppMousePassthroughActive(at: now)
+            if appMousePassthroughActive && type == .leftMouseUp {
+                clearAppMousePassthrough()
+                return unsafe Unmanaged.passUnretained(event)
+            }
+            if appMousePassthroughActive && type == .leftMouseDragged {
+                return unsafe Unmanaged.passUnretained(event)
+            }
+
+            let canCheckAppPassthroughForMouseDown =
+                type == .leftMouseDown
+                && !isActivelyDragging
+                && !forceClickConversionActive
+
+            if canCheckAppPassthroughForMouseDown && shouldSkipGestureForAppPassthrough() {
+                forceClickConversionActive = false
+                if gestureActive {
+                    setAppGesturePassthrough(canResume: false)
+                }
+                startAppMousePassthrough(at: now)
+                suppressForceClickConversionAfterAppPassthrough(
+                    for: postMiddleClickSuppressionWindow)
+                return unsafe Unmanaged.passUnretained(event)
+            }
         }
 
         // Force click support: convert physical left clicks to middle clicks only after
@@ -793,18 +902,21 @@ public final class MultitouchManager: @unchecked Sendable {
         let canConvertForceClick =
             hasStableThreeFingerContact
             && modifierKeyHeld
-            && configuration.tapToClickEnabled
+            && config.tapToClickEnabled
             && isLeftButton
             && !isOurEvent
             && !isActivelyDragging
-            && !shouldPassThroughCurrentGesture
+            && !passthroughActive
+            && !isAppPassthroughForceClickSuppressionActive(at: now)
 
         if isLeftButton && !isOurEvent {
             if type == .leftMouseDown {
                 if canConvertForceClick {
                     forceClickConversionActive = true
                     lastForceClickTime = now
-                    suppressNativeMouseEvents(for: postMiddleClickSuppressionWindow)
+                    suppressNativeMouseEvents(
+                        for: postMiddleClickSuppressionWindow,
+                        generatedByForceClick: true)
                     mouseGenerator.performClick()
                     // Suppress the original left click
                     return nil
@@ -820,13 +932,12 @@ public final class MultitouchManager: @unchecked Sendable {
         let shouldPassThroughDisabledTapLeftClick =
             isLeftButton
             && !isOurEvent
-            && !configuration.tapToClickEnabled
+            && !config.tapToClickEnabled
             && !isActivelyDragging
             && !forceClickConversionActive
 
         // Suppress left/right events during gesture or shortly after
         // Only suppress after gesture end if the last gesture was actually active (not cancelled)
-        let suppressionState = mouseSuppressionState(at: now)
         let shouldSuppress =
             (gestureActive && !shouldPassThroughDisabledTapLeftClick)
             || (suppressionState.gestureStart && !shouldPassThroughDisabledTapLeftClick)
@@ -842,10 +953,11 @@ public final class MultitouchManager: @unchecked Sendable {
 
     // MARK: - Private Methods
 
-    private func applyConfiguration() {
-        gestureRecognizer.configuration = configuration
-        mouseGenerator.smoothingFactor = configuration.smoothingFactor
-        mouseGenerator.minimumMovementThreshold = CGFloat(configuration.minimumMovementThreshold)
+    private func applyConfiguration(_ config: GestureConfiguration? = nil) {
+        let config = config ?? configuration
+        gestureRecognizer.configuration = config
+        mouseGenerator.smoothingFactor = config.smoothingFactor
+        mouseGenerator.minimumMovementThreshold = CGFloat(config.minimumMovementThreshold)
     }
 
     private func recordValidFingerCount(_ validFingerCount: Int) {
@@ -869,10 +981,17 @@ public final class MultitouchManager: @unchecked Sendable {
         return stableThreeFingerContactActive
     }
 
-    private func suppressNativeMouseEvents(for duration: TimeInterval) {
+    private func suppressNativeMouseEvents(
+        for duration: TimeInterval,
+        generatedByForceClick: Bool = false
+    ) {
         let deadline = CACurrentMediaTime() + duration
         nativeMouseSuppressionLock.lock()
         nativeMouseSuppressionUntil = max(nativeMouseSuppressionUntil, deadline)
+        if generatedByForceClick {
+            forceClickNativeMouseSuppressionUntil = max(
+                forceClickNativeMouseSuppressionUntil, deadline)
+        }
         nativeMouseSuppressionLock.unlock()
     }
 
@@ -883,9 +1002,23 @@ public final class MultitouchManager: @unchecked Sendable {
         nativeMouseSuppressionLock.unlock()
     }
 
+    private func suppressForceClickConversionAfterAppPassthrough(for duration: TimeInterval) {
+        let deadline = CACurrentMediaTime() + duration
+        nativeMouseSuppressionLock.lock()
+        appPassthroughForceClickSuppressionUntil = max(
+            appPassthroughForceClickSuppressionUntil, deadline)
+        nativeMouseSuppressionLock.unlock()
+    }
+
     private func isNativeMouseSuppressionActive(at timestamp: TimeInterval) -> Bool {
         let state = mouseSuppressionState(at: timestamp)
         return state.generatedMiddleClick || state.gestureStart
+    }
+
+    private func isAppPassthroughForceClickSuppressionActive(at timestamp: TimeInterval) -> Bool {
+        nativeMouseSuppressionLock.lock()
+        defer { nativeMouseSuppressionLock.unlock() }
+        return timestamp < appPassthroughForceClickSuppressionUntil
     }
 
     private func mouseSuppressionState(at timestamp: TimeInterval) -> (
@@ -905,10 +1038,70 @@ public final class MultitouchManager: @unchecked Sendable {
         nativeMouseSuppressionLock.unlock()
     }
 
+    private func clearGeneratedMiddleClickSuppressionIfForceClickOwned() {
+        let now = CACurrentMediaTime()
+        nativeMouseSuppressionLock.lock()
+        if forceClickNativeMouseSuppressionUntil > now
+            && nativeMouseSuppressionUntil <= forceClickNativeMouseSuppressionUntil
+        {
+            nativeMouseSuppressionUntil = 0
+        }
+        forceClickNativeMouseSuppressionUntil = 0
+        nativeMouseSuppressionLock.unlock()
+    }
+
+    private func clearGeneratedMiddleClickSuppression() {
+        nativeMouseSuppressionLock.lock()
+        forceClickNativeMouseSuppressionUntil = 0
+        nativeMouseSuppressionUntil = 0
+        nativeMouseSuppressionLock.unlock()
+    }
+
+    private func clearAppPassthroughForceClickSuppression() {
+        nativeMouseSuppressionLock.lock()
+        appPassthroughForceClickSuppressionUntil = 0
+        nativeMouseSuppressionLock.unlock()
+    }
+
+    private func startAppMousePassthrough(at timestamp: TimeInterval) {
+        appMousePassthroughLock.lock()
+        _appPassthroughLeftMouseDownActive = true
+        _appPassthroughLeftMouseDeadline = timestamp + appMousePassthroughTimeout
+        appMousePassthroughLock.unlock()
+    }
+
+    private func isAppMousePassthroughActive(at timestamp: TimeInterval) -> Bool {
+        appMousePassthroughLock.lock()
+        defer { appMousePassthroughLock.unlock() }
+
+        guard _appPassthroughLeftMouseDownActive else { return false }
+        if timestamp <= _appPassthroughLeftMouseDeadline {
+            return true
+        }
+
+        _appPassthroughLeftMouseDownActive = false
+        _appPassthroughLeftMouseDeadline = 0
+        return false
+    }
+
+    private func clearAppMousePassthrough() {
+        appMousePassthroughLock.lock()
+        _appPassthroughLeftMouseDownActive = false
+        _appPassthroughLeftMouseDeadline = 0
+        appMousePassthroughLock.unlock()
+    }
+
+    private func clearAppPassthroughState() {
+        clearAppMousePassthrough()
+        clearAppPassthroughForceClickSuppression()
+    }
+
     private func clearNativeMouseSuppression() {
         nativeMouseSuppressionLock.lock()
         gestureStartMouseSuppressionUntil = 0
         nativeMouseSuppressionUntil = 0
+        forceClickNativeMouseSuppressionUntil = 0
+        appPassthroughForceClickSuppressionUntil = 0
         nativeMouseSuppressionLock.unlock()
     }
 
@@ -917,7 +1110,8 @@ public final class MultitouchManager: @unchecked Sendable {
     /// - Note: WindowHelper uses AppKit APIs (NSEvent.mouseLocation, NSScreen.main)
     ///         which must be called from the main thread
     private func shouldSkipGestureForDesktop() -> Bool {
-        guard configuration.ignoreDesktop else { return false }
+        let config = configuration
+        guard config.ignoreDesktop else { return false }
 
         if Thread.isMainThread {
             return MainActor.assumeIsolated { WindowHelper.isCursorOverDesktop() }
@@ -932,19 +1126,77 @@ public final class MultitouchManager: @unchecked Sendable {
     /// - Returns: true if cursor is in title bar, false otherwise
     /// - Note: Uses thread-safe CGEvent APIs, can be called from any thread
     private func shouldSkipGestureForTitleBar() -> Bool {
-        guard configuration.passThroughTitleBar else { return false }
+        let config = configuration
+        guard config.passThroughTitleBar else { return false }
 
-        let titleBarHeight = configuration.titleBarHeight
+        let titleBarHeight = config.titleBarHeight
         // Use thread-safe version that doesn't require main thread
         return WindowHelper.isCursorInTitleBarThreadSafe(titleBarHeight: titleBarHeight)
     }
 
     /// Thread-safe check if cursor is over an app window that should fully own 3-finger input.
-    private func shouldSkipGestureForAppPassthrough() -> Bool {
-        guard configuration.passThroughAltTab else { return false }
+    private func shouldSkipGestureForAppPassthrough(useCache: Bool = false) -> Bool {
+        let config = configuration
+        guard config.passThroughAltTab else { return false }
+
+        if useCache {
+            let now = CACurrentMediaTime()
+            appPassthroughCheckCacheLock.lock()
+            if now - appPassthroughLastCheckTime < appPassthroughDragCheckInterval {
+                let cachedResult = appPassthroughLastCheckResult
+                appPassthroughCheckCacheLock.unlock()
+                return cachedResult
+            }
+            appPassthroughCheckCacheLock.unlock()
+
+            let result = shouldSkipGestureForAppPassthrough(useCache: false)
+            appPassthroughCheckCacheLock.lock()
+            appPassthroughLastCheckTime = now
+            appPassthroughLastCheckResult = result
+            appPassthroughCheckCacheLock.unlock()
+            return result
+        }
+
+        if let appPassthroughCheck {
+            return appPassthroughCheck()
+        }
 
         return WindowHelper.isCursorOverAppWindowThreadSafe(
             ownerNames: [GestureConfiguration.altTabOwnerName])
+    }
+
+    private func gesturePassthroughSnapshot() -> (
+        reason: GesturePassthroughReason, generation: UInt64, appCanResume: Bool,
+        appWasActiveDrag: Bool
+    ) {
+        gesturePassthroughLock.lock()
+        defer { gesturePassthroughLock.unlock() }
+        return (
+            _gesturePassthroughReason,
+            _gesturePassthroughGeneration,
+            _appPassthroughGestureCanResume,
+            _appPassthroughWasActiveDrag
+        )
+    }
+
+    private func setAppGesturePassthrough(canResume: Bool, wasActiveDrag: Bool = false) {
+        gesturePassthroughLock.lock()
+        _gesturePassthroughGeneration &+= 1
+        _gesturePassthroughReason = .app
+        _appPassthroughGestureCanResume = canResume
+        _appPassthroughWasActiveDrag = wasActiveDrag
+        gesturePassthroughLock.unlock()
+    }
+
+    private func clearGesturePassthroughReason(ifGenerationMatches generation: UInt64) {
+        gesturePassthroughLock.lock()
+        defer { gesturePassthroughLock.unlock() }
+
+        guard _gesturePassthroughGeneration == generation else { return }
+        _gesturePassthroughGeneration &+= 1
+        _gesturePassthroughReason = .none
+        _appPassthroughGestureCanResume = false
+        _appPassthroughWasActiveDrag = false
     }
 }
 
@@ -960,8 +1212,9 @@ extension MultitouchManager: DeviceMonitorDelegate {
         guard isEnabled else { return }
 
         let touchCount = Int(count)
+        let config = configuration
         let validFingerCount = unsafe GestureRecognizer.validFingerPositions(
-            from: touches, count: touchCount, configuration: configuration
+            from: touches, count: touchCount, configuration: config
         ).count
         recordValidFingerCount(validFingerCount)
 
@@ -1015,7 +1268,9 @@ extension MultitouchManager: GestureRecognizerDelegate {
     func gestureRecognizerDidStart(_ recognizer: GestureRecognizer, at position: MTPoint) {
         if shouldSkipGestureForAppPassthrough() {
             Log.debug("gestureRecognizerDidStart: excluded app window detected - passing through", category: .gesture)
-            shouldPassThroughCurrentGesture = true
+            setAppGesturePassthrough(canResume: false)
+            suppressForceClickConversionAfterAppPassthrough(
+                for: postMiddleClickSuppressionWindow)
             return
         }
 
@@ -1023,12 +1278,12 @@ extension MultitouchManager: GestureRecognizerDelegate {
         // This must happen before setting isInThreeFingerGesture to allow system to handle it
         if shouldSkipGestureForTitleBar() {
             Log.debug("gestureRecognizerDidStart: Title bar detected - passing through to system", category: .gesture)
-            shouldPassThroughCurrentGesture = true
+            currentGesturePassthroughReason = .titleBar
             // Don't set isInThreeFingerGesture - let system handle the gesture
             return
         }
         
-        shouldPassThroughCurrentGesture = false
+        currentGesturePassthroughReason = .none
         Log.debug("gestureRecognizerDidStart: Normal gesture - handling ourselves", category: .gesture)
         suppressGestureStartMouseEvents(for: gestureStartSuppressionWindow)
         DispatchQueue.main.async { [weak self] in
@@ -1038,8 +1293,43 @@ extension MultitouchManager: GestureRecognizerDelegate {
 
     func gestureRecognizerDidTap(_ recognizer: GestureRecognizer) {
         // Skip if this gesture is being passed through to system (e.g., title bar drag)
-        if shouldPassThroughCurrentGesture {
-            shouldPassThroughCurrentGesture = false
+        let passthroughSnapshot = gesturePassthroughSnapshot()
+        if passthroughSnapshot.reason != .none {
+            if passthroughSnapshot.reason == .app && !shouldSkipGestureForAppPassthrough() {
+                currentGesturePassthroughReason = .none
+                lastForceClickTime = 0
+                DispatchQueue.main.async { [weak self] in
+                    self?.isInThreeFingerGesture = false
+                    self?.isActivelyDragging = false
+                }
+                mouseGenerator.cancelDrag()
+                return
+            } else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.isInThreeFingerGesture = false
+                    self?.isActivelyDragging = false
+                    self?.clearGesturePassthroughReason(
+                        ifGenerationMatches: passthroughSnapshot.generation)
+                }
+                mouseGenerator.cancelDrag()
+                return
+            }
+        }
+
+        if shouldSkipGestureForAppPassthrough() {
+            clearGestureStartMouseSuppression()
+            if !forceClickConversionActive {
+                clearGeneratedMiddleClickSuppressionIfForceClickOwned()
+            }
+            lastForceClickTime = 0
+            suppressForceClickConversionAfterAppPassthrough(
+                for: postMiddleClickSuppressionWindow)
+            currentFingerCount = 0
+            DispatchQueue.main.async { [weak self] in
+                self?.isInThreeFingerGesture = false
+                self?.isActivelyDragging = false
+            }
+            mouseGenerator.cancelDrag()
             return
         }
         
@@ -1061,9 +1351,11 @@ extension MultitouchManager: GestureRecognizerDelegate {
             }
             return
         }
-        
+
+        let config = configuration
+
         // Check if tap to click is enabled
-        guard configuration.tapToClickEnabled else {
+        guard config.tapToClickEnabled else {
             // Reset state even if tap is disabled
             DispatchQueue.main.async { [weak self] in
                 self?.isInThreeFingerGesture = false
@@ -1092,9 +1384,9 @@ extension MultitouchManager: GestureRecognizerDelegate {
         // Note: WindowHelper uses AppKit APIs (NSEvent.mouseLocation, NSScreen.main)
         // which must be called from the main thread
         let shouldPerformTap: Bool
-        if configuration.minimumWindowSizeFilterEnabled {
-            let minWidth = configuration.minimumWindowWidth
-            let minHeight = configuration.minimumWindowHeight
+        if config.minimumWindowSizeFilterEnabled {
+            let minWidth = config.minimumWindowWidth
+            let minHeight = config.minimumWindowHeight
             // Avoid deadlock: call directly if already on main thread, otherwise sync
             if Thread.isMainThread {
                 shouldPerformTap = MainActor.assumeIsolated {
@@ -1134,11 +1426,40 @@ extension MultitouchManager: GestureRecognizerDelegate {
 
     func gestureRecognizerDidBeginDragging(_ recognizer: GestureRecognizer) {
         // Skip if this gesture is being passed through to system (e.g., title bar drag)
-        if shouldPassThroughCurrentGesture {
-            return  // Don't reset flag here - will be reset when gesture ends
+        let passthroughSnapshot = gesturePassthroughSnapshot()
+        if passthroughSnapshot.reason != .none {
+            if passthroughSnapshot.reason == .app && !shouldSkipGestureForAppPassthrough() {
+                currentGesturePassthroughReason = .none
+                guard passthroughSnapshot.appCanResume else {
+                    currentFingerCount = 0
+                    DispatchQueue.main.async { [weak self] in
+                        self?.isInThreeFingerGesture = false
+                        self?.isActivelyDragging = false
+                    }
+                    mouseGenerator.cancelDrag()
+                    return
+                }
+            } else {
+                return  // Don't reset flag here - will be reset when gesture ends
+            }
+        }
+
+        if shouldSkipGestureForAppPassthrough() {
+            setAppGesturePassthrough(canResume: true)
+            clearGestureStartMouseSuppression()
+            suppressForceClickConversionAfterAppPassthrough(
+                for: postMiddleClickSuppressionWindow)
+            currentFingerCount = 0
+            DispatchQueue.main.async { [weak self] in
+                self?.isInThreeFingerGesture = false
+                self?.isActivelyDragging = false
+            }
+            mouseGenerator.cancelDrag()
+            return
         }
         
-        guard configuration.middleDragEnabled else {
+        let config = configuration
+        guard config.middleDragEnabled else {
             // Reset state even if drag is disabled
             DispatchQueue.main.async { [weak self] in
                 self?.isInThreeFingerGesture = false
@@ -1166,9 +1487,9 @@ extension MultitouchManager: GestureRecognizerDelegate {
         // Check window size filter before starting drag
         // Note: WindowHelper uses AppKit APIs (NSEvent.mouseLocation, NSScreen.main)
         // which must be called from the main thread
-        if configuration.minimumWindowSizeFilterEnabled {
-            let minWidth = configuration.minimumWindowWidth
-            let minHeight = configuration.minimumWindowHeight
+        if config.minimumWindowSizeFilterEnabled {
+            let minWidth = config.minimumWindowWidth
+            let minHeight = config.minimumWindowHeight
             // Avoid deadlock: call directly if already on main thread, otherwise sync
             let meetsMinimumSize: Bool
             if Thread.isMainThread {
@@ -1205,14 +1526,46 @@ extension MultitouchManager: GestureRecognizerDelegate {
 
     func gestureRecognizerDidUpdateDragging(_ recognizer: GestureRecognizer, with data: GestureData)
     {
-        // Skip if this gesture is being passed through to system
-        guard !shouldPassThroughCurrentGesture else { return }
-        guard configuration.middleDragEnabled else { return }
-        let delta = data.frameDelta(from: configuration)
+        let passthroughSnapshot = gesturePassthroughSnapshot()
+        if passthroughSnapshot.reason != .none {
+            if passthroughSnapshot.reason == .app
+                && passthroughSnapshot.appCanResume
+                && !shouldSkipGestureForAppPassthrough(useCache: true)
+            {
+                currentGesturePassthroughReason = .none
+                suppressGestureStartMouseEvents(for: gestureStartSuppressionWindow)
+                DispatchQueue.main.async { [weak self] in
+                    self?.isInThreeFingerGesture = true
+                    self?.isActivelyDragging = true
+                }
+                mouseGenerator.startDrag(at: MouseEventGenerator.currentMouseLocation)
+            } else {
+                return
+            }
+        }
+
+        let config = configuration
+        guard config.middleDragEnabled else { return }
+
+        if shouldSkipGestureForAppPassthrough(useCache: true) {
+            setAppGesturePassthrough(canResume: true, wasActiveDrag: true)
+            clearGestureStartMouseSuppression()
+            suppressForceClickConversionAfterAppPassthrough(
+                for: postMiddleClickSuppressionWindow)
+            currentFingerCount = 0
+            DispatchQueue.main.async { [weak self] in
+                self?.isActivelyDragging = false
+                self?.isInThreeFingerGesture = false
+            }
+            mouseGenerator.cancelDrag()
+            return
+        }
+
+        let delta = data.frameDelta(from: config)
 
         guard delta.x != 0 || delta.y != 0 else { return }
 
-        let baseScaleFactor: CGFloat = 1600.0 * CGFloat(configuration.sensitivity)
+        let baseScaleFactor: CGFloat = 1600.0 * CGFloat(config.sensitivity)
         // Use symmetric scaling for both axes - previous horizontal restrictions caused
         // glitchy and restricted movement by reducing horizontal by 65% and capping at 18px
         let scaledDeltaX = delta.x * baseScaleFactor
@@ -1223,13 +1576,33 @@ extension MultitouchManager: GestureRecognizerDelegate {
 
     func gestureRecognizerDidEndDragging(_ recognizer: GestureRecognizer) {
         // Reset pass-through flag
-        let wasPassingThrough = shouldPassThroughCurrentGesture
-        shouldPassThroughCurrentGesture = false
+        let passthroughSnapshot = gesturePassthroughSnapshot()
+        let wasPassingThrough = passthroughSnapshot.reason != .none
         
         // If we were passing through, don't update our state or send events
         if wasPassingThrough {
+            if passthroughSnapshot.reason == .app {
+                suppressForceClickConversionAfterAppPassthrough(
+                    for: postMiddleClickSuppressionWindow)
+            }
+            if passthroughSnapshot.appWasActiveDrag {
+                suppressNativeMouseEvents(for: postMiddleClickSuppressionWindow)
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.isActivelyDragging = false
+                self?.isInThreeFingerGesture = false
+                if passthroughSnapshot.appWasActiveDrag {
+                    self?.gestureEndTime = CACurrentMediaTime()
+                    self?.lastGestureWasActive = true
+                }
+                self?.clearGesturePassthroughReason(
+                    ifGenerationMatches: passthroughSnapshot.generation)
+            }
+            mouseGenerator.cancelDrag()
             return
         }
+
+        currentGesturePassthroughReason = .none
         
         suppressNativeMouseEvents(for: postMiddleClickSuppressionWindow)
         DispatchQueue.main.async { [weak self] in
@@ -1245,7 +1618,8 @@ extension MultitouchManager: GestureRecognizerDelegate {
 
     func gestureRecognizerDidCancel(_ recognizer: GestureRecognizer) {
         // Cancel from early state (e.g., possibleTap) - reset state
-        shouldPassThroughCurrentGesture = false
+        currentGesturePassthroughReason = .none
+        clearAppPassthroughState()
         clearGestureStartMouseSuppression()
         DispatchQueue.main.async { [weak self] in
             self?.isInThreeFingerGesture = false
@@ -1256,7 +1630,8 @@ extension MultitouchManager: GestureRecognizerDelegate {
 
     func gestureRecognizerDidCancelDragging(_ recognizer: GestureRecognizer) {
         // Cancel drag immediately - user added 4th finger for Mission Control
-        shouldPassThroughCurrentGesture = false
+        currentGesturePassthroughReason = .none
+        clearAppPassthroughState()
         clearGestureStartMouseSuppression()
         DispatchQueue.main.async { [weak self] in
             self?.isActivelyDragging = false
