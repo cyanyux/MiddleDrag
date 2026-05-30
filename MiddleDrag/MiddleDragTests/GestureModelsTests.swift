@@ -35,7 +35,7 @@ final class GestureModelsTests: XCTestCase {
         XCTAssertEqual(config.smoothingFactor, 0.3)
         XCTAssertEqual(config.tapThreshold, 0.15)
         XCTAssertEqual(config.moveThreshold, 0.015)
-        XCTAssertTrue(config.middleDragEnabled)
+        XCTAssertFalse(config.middleDragEnabled)  // Drag off by default
         XCTAssertFalse(config.blockSystemGestures)
     }
 
@@ -81,12 +81,12 @@ final class GestureModelsTests: XCTestCase {
     func testDefaultUserPreferences() {
         let prefs = UserPreferences()
 
-        XCTAssertFalse(prefs.launchAtLogin)
+        XCTAssertTrue(prefs.launchAtLogin)  // Launch at login on by default
         XCTAssertEqual(prefs.dragSensitivity, 1.0)
         XCTAssertEqual(prefs.tapThreshold, 0.15)
         XCTAssertEqual(prefs.smoothingFactor, 0.3)
         XCTAssertFalse(prefs.blockSystemGestures)
-        XCTAssertTrue(prefs.middleDragEnabled)
+        XCTAssertFalse(prefs.middleDragEnabled)  // Drag off by default
     }
 
     func testUserPreferencesToGestureConfig() {
@@ -111,9 +111,12 @@ final class GestureModelsTests: XCTestCase {
     func testDefaultGestureConfigurationPalmRejectionFields() {
         let config = GestureConfiguration()
 
-        // Exclusion zone defaults
-        XCTAssertFalse(config.exclusionZoneEnabled)
-        XCTAssertEqual(config.exclusionZoneSize, 0.15, accuracy: 0.001)
+        // Edge exclusion zone defaults — on by default, bottom/left/right at a 5% band
+        XCTAssertTrue(config.exclusionZoneEnabled)
+        XCTAssertEqual(config.exclusionZoneSize, 0.05, accuracy: 0.001)
+        XCTAssertTrue(config.excludeBottomEdge)
+        XCTAssertTrue(config.excludeLeftEdge)
+        XCTAssertTrue(config.excludeRightEdge)
 
         // Modifier key defaults
         XCTAssertFalse(config.requireModifierKey)
@@ -127,9 +130,12 @@ final class GestureModelsTests: XCTestCase {
     func testDefaultUserPreferencesPalmRejectionFields() {
         let prefs = UserPreferences()
 
-        // Exclusion zone defaults
-        XCTAssertFalse(prefs.exclusionZoneEnabled)
-        XCTAssertEqual(prefs.exclusionZoneSize, 0.15, accuracy: 0.001)
+        // Edge exclusion zone defaults — on by default, bottom/left/right at a 5% band
+        XCTAssertTrue(prefs.exclusionZoneEnabled)
+        XCTAssertEqual(prefs.exclusionZoneSize, 0.05, accuracy: 0.001)
+        XCTAssertTrue(prefs.excludeBottomEdge)
+        XCTAssertTrue(prefs.excludeLeftEdge)
+        XCTAssertTrue(prefs.excludeRightEdge)
 
         // Modifier key defaults
         XCTAssertFalse(prefs.requireModifierKey)
@@ -146,6 +152,9 @@ final class GestureModelsTests: XCTestCase {
         // Set palm rejection values
         prefs.exclusionZoneEnabled = true
         prefs.exclusionZoneSize = 0.25
+        prefs.excludeBottomEdge = true
+        prefs.excludeLeftEdge = false
+        prefs.excludeRightEdge = true
         prefs.requireModifierKey = true
         prefs.modifierKeyType = .option
         prefs.contactSizeFilterEnabled = true
@@ -156,6 +165,9 @@ final class GestureModelsTests: XCTestCase {
         // Verify mapping (Double to Float conversion)
         XCTAssertTrue(config.exclusionZoneEnabled)
         XCTAssertEqual(config.exclusionZoneSize, 0.25, accuracy: 0.001)
+        XCTAssertTrue(config.excludeBottomEdge)
+        XCTAssertFalse(config.excludeLeftEdge)
+        XCTAssertTrue(config.excludeRightEdge)
         XCTAssertTrue(config.requireModifierKey)
         XCTAssertEqual(config.modifierKeyType, .option)
         XCTAssertTrue(config.contactSizeFilterEnabled)

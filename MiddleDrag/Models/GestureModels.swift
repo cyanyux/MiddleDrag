@@ -46,7 +46,7 @@ public struct GestureConfiguration: Sendable {
     var blockSystemGestures: Bool = false
 
     // Feature toggles
-    var middleDragEnabled: Bool = true  // Allow disabling drag while keeping tap
+    var middleDragEnabled: Bool = false  // Drag off by default (tap-to-click remains on)
     var tapToClickEnabled: Bool = true  // Allow disabling tap while keeping drag
 
     // Velocity scaling
@@ -56,9 +56,16 @@ public struct GestureConfiguration: Sendable {
     // Performance
     var minimumMovementThreshold: Float = 0.5  // pixels
 
-    // Palm rejection - Exclusion zone
-    var exclusionZoneEnabled: Bool = false
-    var exclusionZoneSize: Float = 0.15  // Bottom 15% of trackpad (normalized 0-1)
+    // Palm rejection - Edge exclusion zone
+    // Rejects contacts that begin within a band of the trackpad edges, where a
+    // resting palm / heel of the hand / thumb base typically makes contact.
+    // Applied only at gesture start (frozen during an active drag) so a finger
+    // drifting into the band mid-drag is never dropped.
+    var exclusionZoneEnabled: Bool = true
+    var exclusionZoneSize: Float = 0.05  // Edge band width (normalized 0-1) per enabled edge
+    var excludeBottomEdge: Bool = true  // Bottom edge (y < band) — near-edge palm/heel rest
+    var excludeLeftEdge: Bool = true  // Left edge (x < band) — side-of-hand rest
+    var excludeRightEdge: Bool = true  // Right edge (x > 1 - band) — side-of-hand rest
 
     // Palm rejection - Modifier key
     var requireModifierKey: Bool = false
@@ -218,7 +225,7 @@ public struct HotKeyBinding: Codable, Equatable, Sendable {
 
 /// User preferences that persist across app launches
 public struct UserPreferences: Codable, Sendable {
-    public var launchAtLogin: Bool = false
+    public var launchAtLogin: Bool = true
     var dragSensitivity: Double = 1.0
     var tapThreshold: Double = 0.15
     var maxTapHoldDuration: Double = 0.5  // 500ms max hold for tap
@@ -228,12 +235,15 @@ public struct UserPreferences: Codable, Sendable {
     )
     var requiresExactlyThreeFingers: Bool = true
     var blockSystemGestures: Bool = false
-    var middleDragEnabled: Bool = true  // Allow disabling drag while keeping tap
+    var middleDragEnabled: Bool = false  // Drag off by default (tap-to-click remains on)
     var tapToClickEnabled: Bool = true  // Allow disabling tap while keeping drag
 
-    // Palm rejection - Exclusion zone
-    var exclusionZoneEnabled: Bool = false
-    var exclusionZoneSize: Double = 0.15  // Bottom 15% of trackpad
+    // Palm rejection - Edge exclusion zone (bottom/left/right)
+    var exclusionZoneEnabled: Bool = true
+    var exclusionZoneSize: Double = 0.05  // Edge band width per enabled edge
+    var excludeBottomEdge: Bool = true
+    var excludeLeftEdge: Bool = true
+    var excludeRightEdge: Bool = true
 
     // Palm rejection - Modifier key
     var requireModifierKey: Bool = false
@@ -287,6 +297,9 @@ public struct UserPreferences: Codable, Sendable {
             tapToClickEnabled: tapToClickEnabled,
             exclusionZoneEnabled: exclusionZoneEnabled,
             exclusionZoneSize: Float(exclusionZoneSize),
+            excludeBottomEdge: excludeBottomEdge,
+            excludeLeftEdge: excludeLeftEdge,
+            excludeRightEdge: excludeRightEdge,
             requireModifierKey: requireModifierKey,
             modifierKeyType: modifierKeyType,
             contactSizeFilterEnabled: contactSizeFilterEnabled,

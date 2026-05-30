@@ -68,8 +68,13 @@ class GestureRecognizer {
         }
 
         let activeFingerCount = unsafe Self.activeFingerCount(from: touches, count: count)
+        // Palm filters classify contacts at gesture start, then freeze: once a drag
+        // is underway we stop rejecting contacts so a finger drifting into an edge
+        // band (or a hard press spiking its size) can never drop out mid-drag. The
+        // raw-contact 4-finger cancel below still guards against added palms.
         let validFingers = unsafe Self.validFingerPositions(
-            from: touches, count: count, configuration: configuration)
+            from: touches, count: count, configuration: configuration,
+            applyPalmRejection: state != .dragging)
 
         let fingerCount = validFingers.count
 
@@ -126,10 +131,16 @@ class GestureRecognizer {
         frameCount += 1
     }
 
+    /// Returns the positions of contacts that count as fingers for gesture detection.
+    /// - Parameter applyPalmRejection: when `false` (e.g. during an active drag) the
+    ///   palm filters are skipped and every touching contact is returned, so a
+    ///   recognized gesture is never broken by a contact entering an edge band or
+    ///   growing in size. Pass `true` when deciding whether to *start* a gesture.
     static func validFingerPositions(
         from touches: UnsafeMutableRawPointer,
         count: Int,
-        configuration: GestureConfiguration
+        configuration: GestureConfiguration,
+        applyPalmRejection: Bool = true
     ) -> [MTPoint] {
         let touchArray = unsafe touches.bindMemory(to: MTTouch.self, capacity: count)
         var validFingers: [MTPoint] = []
@@ -140,11 +151,7 @@ class GestureRecognizer {
             if touch.state == 3 || touch.state == 4 {
                 let position = touch.normalizedVector.position
 
-                if configuration.exclusionZoneEnabled && position.y < configuration.exclusionZoneSize {
-                    continue
-                }
-
-                if configuration.contactSizeFilterEnabled && touch.zTotal > configuration.maxContactSize {
+                if applyPalmRejection && Self.isPalmContact(touch, configuration: configuration) {
                     continue
                 }
 
@@ -153,6 +160,33 @@ class GestureRecognizer {
         }
 
         return validFingers
+    }
+
+    /// Per-contact palm classification. Combines edge-zone rejection (position-based,
+    /// scale-independent) with the absolute contact-size backstop. Coordinates are
+    /// normalized 0-1 with the origin at the lower-left: y=0 bottom, x=0 left.
+    private static func isPalmContact(
+        _ touch: MTTouch, configuration: GestureConfiguration
+    ) -> Bool {
+        // Edge exclusion zone — a resting palm / heel / thumb base typically makes
+        // contact near the bottom or side edges. The top edge is deliberately never
+        // excluded: it is where fingers legitimately reach during a gesture.
+        if configuration.exclusionZoneEnabled {
+            let band = configuration.exclusionZoneSize
+            let position = touch.normalizedVector.position
+            if configuration.excludeBottomEdge && position.y < band { return true }
+            if configuration.excludeLeftEdge && position.x < band { return true }
+            if configuration.excludeRightEdge && position.x > 1 - band { return true }
+        }
+
+        // Absolute contact-size backstop. Note: zTotal's absolute scale is
+        // hardware-dependent, so this is a coarse safety net rather than the
+        // primary discriminator (which is the edge zone above).
+        if configuration.contactSizeFilterEnabled && touch.zTotal > configuration.maxContactSize {
+            return true
+        }
+
+        return false
     }
 
     private static func activeFingerCount(from touches: UnsafeMutableRawPointer, count: Int) -> Int {

@@ -20,14 +20,6 @@ public class MenuBarController: NSObject {
     private var preferences: UserPreferences
     private(set) var isMenuBarVisible = true
 
-    // Menu item tags for easy reference
-    private enum MenuItemTag: Int {
-        case enabled = 1
-        case launchAtLogin = 2
-        case middleDrag = 3
-        case tapToClick = 4
-    }
-
     // MARK: - Initialization
 
     public init(multitouchManager: MultitouchManager, preferences: UserPreferences) {
@@ -86,18 +78,26 @@ public class MenuBarController: NSObject {
     func updateStatusIcon(enabled: Bool) {
         guard let button = statusItem.button else { return }
 
-        let iconName = enabled ? "hand.raised.fingers.spread" : "hand.raised.slash"
-        button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "MiddleDrag")
-        button.image?.isTemplate = true
+        // Active: filled. Disabled: outline + dimmed — clearly distinct.
+        // 17pt sizing for the menu-bar icon (default symbols render ~15pt).
+        let iconName = enabled ? "ellipsis.circle.fill" : "ellipsis.circle"
+        let config = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
+        let image =
+            (NSImage(systemSymbolName: iconName, accessibilityDescription: "MiddleDrag")
+            ?? NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "MiddleDrag"))?
+            .withSymbolConfiguration(config)
+        image?.isTemplate = true
+        button.image = image
 
-        // Animate the change and restore alpha when complete
+        // Brief pulse on change, then settle at full opacity (active) or dimmed (disabled).
+        let targetAlpha: CGFloat = enabled ? 1.0 : 0.5
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.2
             button.animator().alphaValue = 0.7
         }, completionHandler: {
             // Ensure mutation happens on the main actor
             Task { @MainActor in
-                button.alphaValue = 1.0
+                button.alphaValue = targetAlpha
             }
         })
     }
@@ -154,43 +154,43 @@ public class MenuBarController: NSObject {
     }
 
     private func createEnabledItem() -> NSMenuItem {
+        // No keyEquivalent: a custom-view menu item (keepOpen) ignores key equivalents,
+        // so it would be a dead, invisible shortcut. The global ⌘⇧E hotkey still toggles.
         let item = NSMenuItem(
-            title: "Enabled", action: #selector(toggleEnabled), keyEquivalent: "e")
+            title: "Enabled", action: #selector(toggleEnabled), keyEquivalent: "")
         item.target = self  // IMPORTANT: Set target
-        item.state = (multitouchManager?.isEnabled ?? false) ? .on : .off
-        item.tag = MenuItemTag.enabled.rawValue
-        return item
+        return keepOpen(item, checked: { [weak self] in self?.multitouchManager?.isEnabled ?? false })
     }
 
     private func createMiddleDragItem() -> NSMenuItem {
         let item = NSMenuItem(title: "Drag", action: #selector(toggleMiddleDrag), keyEquivalent: "")
         item.target = self
-        let isMainEnabled = multitouchManager?.isEnabled ?? false
-        // Only show checkmark and enable if main toggle is on
-        item.isEnabled = isMainEnabled
-        item.state = (isMainEnabled && preferences.middleDragEnabled) ? .on : .off
-        item.tag = MenuItemTag.middleDrag.rawValue
-        return item
+        // Only checked/enabled when the main toggle is on.
+        return keepOpen(
+            item,
+            checked: { [weak self] in
+                (self?.multitouchManager?.isEnabled ?? false) && (self?.preferences.middleDragEnabled ?? false)
+            },
+            enabled: { [weak self] in self?.multitouchManager?.isEnabled ?? false })
     }
 
     private func createTapToClickItem() -> NSMenuItem {
         let item = NSMenuItem(
             title: "Tap to Click", action: #selector(toggleTapToClick), keyEquivalent: "")
         item.target = self
-        let isMainEnabled = multitouchManager?.isEnabled ?? false
-        item.isEnabled = isMainEnabled
-        item.state = (isMainEnabled && preferences.tapToClickEnabled) ? .on : .off
-        item.tag = MenuItemTag.tapToClick.rawValue
-        return item
+        return keepOpen(
+            item,
+            checked: { [weak self] in
+                (self?.multitouchManager?.isEnabled ?? false) && (self?.preferences.tapToClickEnabled ?? false)
+            },
+            enabled: { [weak self] in self?.multitouchManager?.isEnabled ?? false })
     }
 
     private func createLaunchAtLoginItem() -> NSMenuItem {
         let item = NSMenuItem(
             title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         item.target = self  // IMPORTANT: Set target
-        item.state = preferences.launchAtLogin ? .on : .off
-        item.tag = MenuItemTag.launchAtLogin.rawValue
-        return item
+        return keepOpen(item, checked: { [weak self] in self?.preferences.launchAtLogin ?? false })
     }
 
     private func createCheckForUpdatesItem() -> NSMenuItem {
@@ -204,8 +204,7 @@ public class MenuBarController: NSObject {
         let item = NSMenuItem(
             title: "Automatically Check for Updates", action: #selector(toggleAutoUpdate), keyEquivalent: "")
         item.target = self
-        item.state = UpdateManager.shared.automaticallyChecksForUpdates ? .on : .off
-        return item
+        return keepOpen(item, checked: { UpdateManager.shared.automaticallyChecksForUpdates })
     }
 
     private func createMenuItem(title: String, action: Selector, keyEquivalent: String = "")
@@ -233,10 +232,10 @@ public class MenuBarController: NSObject {
                 title: title, action: #selector(setSensitivity(_:)), keyEquivalent: "")
             menuItem.target = self  // IMPORTANT: Set target
             menuItem.representedObject = value
-            if abs(Float(preferences.dragSensitivity) - value) < 0.01 {
-                menuItem.state = .on
-            }
-            submenu.addItem(menuItem)
+            submenu.addItem(
+                keepOpen(
+                    menuItem,
+                    checked: { [weak self] in abs(Float(self?.preferences.dragSensitivity ?? -1) - value) < 0.01 }))
         }
 
         item.submenu = submenu
@@ -266,37 +265,35 @@ public class MenuBarController: NSObject {
         // Minimum Window Size section (separate from palm rejection as it's window-based)
         let windowSizeItem = createAdvancedMenuItem(
             title: "Ignore Small Windows",
-            isOn: preferences.minimumWindowSizeFilterEnabled,
+            checked: { [weak self] in self?.preferences.minimumWindowSizeFilterEnabled ?? false },
             action: #selector(toggleMinimumWindowSizeFilter)
         )
         submenu.addItem(windowSizeItem)
 
-        // Window size threshold options (only shown when enabled)
-        if preferences.minimumWindowSizeFilterEnabled {
-            let sizes: [(String, Double)] = [
-                ("Very Small (50px)", 50),
-                ("Small (100px)", 100),
-                ("Medium (200px)", 200),
-                ("Large (300px)", 300),
-            ]
-
-            for (title, value) in sizes {
-                let sizeItem = NSMenuItem(
-                    title: "    \(title)", action: #selector(setMinimumWindowSize(_:)),
-                    keyEquivalent: "")
-                sizeItem.target = self
-                sizeItem.representedObject = value
-                if abs(preferences.minimumWindowWidth - value) < 0.01 {
-                    sizeItem.state = .on
-                }
-                submenu.addItem(sizeItem)
-            }
+        // Window size threshold options (always shown; enabled only when the filter is on)
+        let windowSizes: [(String, Double)] = [
+            ("Very Small (50px)", 50),
+            ("Small (100px)", 100),
+            ("Medium (200px)", 200),
+            ("Large (300px)", 300),
+        ]
+        for (title, value) in windowSizes {
+            let sizeItem = NSMenuItem(
+                title: "    \(title)", action: #selector(setMinimumWindowSize(_:)),
+                keyEquivalent: "")
+            sizeItem.target = self
+            sizeItem.representedObject = value
+            submenu.addItem(
+                keepOpen(
+                    sizeItem,
+                    checked: { [weak self] in abs((self?.preferences.minimumWindowWidth ?? -1) - value) < 0.01 },
+                    enabled: { [weak self] in self?.preferences.minimumWindowSizeFilterEnabled ?? false }))
         }
 
         // Ignore Desktop option (suppress gestures when cursor is over desktop)
         let ignoreDesktopItem = createAdvancedMenuItem(
             title: "Ignore Desktop",
-            isOn: preferences.ignoreDesktop,
+            checked: { [weak self] in self?.preferences.ignoreDesktop ?? false },
             action: #selector(toggleIgnoreDesktop)
         )
         submenu.addItem(ignoreDesktopItem)
@@ -305,21 +302,21 @@ public class MenuBarController: NSObject {
         // Allows macOS native three-finger drag to work for window dragging
         let windowBarDragItem = createAdvancedMenuItem(
             title: "Window Bar Drag",
-            isOn: preferences.passThroughTitleBar,
+            checked: { [weak self] in self?.preferences.passThroughTitleBar ?? false },
             action: #selector(toggleWindowBarDrag)
         )
         submenu.addItem(windowBarDragItem)
 
         let verticalSwipeItem = createAdvancedMenuItem(
             title: "Pass Through Vertical Swipes",
-            isOn: preferences.passThroughVerticalSwipes,
+            checked: { [weak self] in self?.preferences.passThroughVerticalSwipes ?? false },
             action: #selector(toggleVerticalSwipePassthrough)
         )
         submenu.addItem(verticalSwipeItem)
 
         let altTabItem = createAdvancedMenuItem(
             title: "Pass Through AltTab Switcher",
-            isOn: preferences.passThroughAltTab,
+            checked: { [weak self] in self?.preferences.passThroughAltTab ?? false },
             action: #selector(toggleAltTabPassthrough)
         )
         submenu.addItem(altTabItem)
@@ -330,7 +327,7 @@ public class MenuBarController: NSObject {
         submenu.addItem(
             createAdvancedMenuItem(
                 title: "Allow Relift During Drag",
-                isOn: preferences.allowReliftDuringDrag,
+                checked: { [weak self] in self?.preferences.allowReliftDuringDrag ?? false },
                 action: #selector(toggleAllowReliftDuringDrag)
             ))
 
@@ -376,7 +373,7 @@ public class MenuBarController: NSObject {
         submenu.addItem(
             createAdvancedMenuItem(
                 title: "Send Crash Reports",
-                isOn: CrashReporter.shared.isEnabled,
+                checked: { CrashReporter.shared.isEnabled },
                 action: #selector(toggleCrashReporting)
             ))
 
@@ -384,7 +381,7 @@ public class MenuBarController: NSObject {
         submenu.addItem(
             createAdvancedMenuItem(
                 title: "Send Performance Data",
-                isOn: CrashReporter.shared.performanceMonitoringEnabled,
+                checked: { CrashReporter.shared.performanceMonitoringEnabled },
                 action: #selector(togglePerformanceMonitoring)
             ))
 
@@ -396,34 +393,47 @@ public class MenuBarController: NSObject {
         let item = NSMenuItem(title: "Palm Rejection", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
 
-        // Exclusion Zone section
+        // Edge Exclusion Zone section
         let exclusionItem = createAdvancedMenuItem(
-            title: "Exclusion Zone",
-            isOn: preferences.exclusionZoneEnabled,
+            title: "Edge Exclusion Zone",
+            checked: { [weak self] in self?.preferences.exclusionZoneEnabled ?? false },
             action: #selector(toggleExclusionZone)
         )
         submenu.addItem(exclusionItem)
 
-        // Exclusion zone size options (only shown when enabled)
-        if preferences.exclusionZoneEnabled {
-            let sizes: [(String, Double)] = [
-                ("10% (Small)", 0.10),
-                ("15% (Default)", 0.15),
-                ("20% (Medium)", 0.20),
-                ("25% (Large)", 0.25),
-            ]
+        // Per-edge toggles — always shown; enabled only when the zone is on.
+        let edges: [(String, () -> Bool, Selector)] = [
+            ("Bottom Edge", { [weak self] in self?.preferences.excludeBottomEdge ?? false }, #selector(toggleExcludeBottomEdge)),
+            ("Left Edge", { [weak self] in self?.preferences.excludeLeftEdge ?? false }, #selector(toggleExcludeLeftEdge)),
+            ("Right Edge", { [weak self] in self?.preferences.excludeRightEdge ?? false }, #selector(toggleExcludeRightEdge)),
+        ]
+        for (title, checked, action) in edges {
+            let edgeItem = NSMenuItem(title: "    \(title)", action: action, keyEquivalent: "")
+            edgeItem.target = self
+            submenu.addItem(
+                keepOpen(
+                    edgeItem, checked: checked,
+                    enabled: { [weak self] in self?.preferences.exclusionZoneEnabled ?? false }))
+        }
 
-            for (title, value) in sizes {
-                let sizeItem = NSMenuItem(
-                    title: "    \(title)", action: #selector(setExclusionZoneSize(_:)),
-                    keyEquivalent: "")
-                sizeItem.target = self
-                sizeItem.representedObject = value
-                if abs(preferences.exclusionZoneSize - value) < 0.01 {
-                    sizeItem.state = .on
-                }
-                submenu.addItem(sizeItem)
-            }
+        submenu.addItem(NSMenuItem.separator())
+
+        let sizes: [(String, Double)] = [
+            ("Band: 3% (Small)", 0.03),
+            ("Band: 5% (Default)", 0.05),
+            ("Band: 8% (Medium)", 0.08),
+            ("Band: 12% (Large)", 0.12),
+        ]
+        for (title, value) in sizes {
+            let sizeItem = NSMenuItem(
+                title: "    \(title)", action: #selector(setExclusionZoneSize(_:)), keyEquivalent: "")
+            sizeItem.target = self
+            sizeItem.representedObject = value
+            submenu.addItem(
+                keepOpen(
+                    sizeItem,
+                    checked: { [weak self] in abs((self?.preferences.exclusionZoneSize ?? -1) - value) < 0.01 },
+                    enabled: { [weak self] in self?.preferences.exclusionZoneEnabled ?? false }))
         }
 
         submenu.addItem(NSMenuItem.separator())
@@ -431,24 +441,23 @@ public class MenuBarController: NSObject {
         // Modifier Key section
         let modifierItem = createAdvancedMenuItem(
             title: "Require Modifier Key",
-            isOn: preferences.requireModifierKey,
+            checked: { [weak self] in self?.preferences.requireModifierKey ?? false },
             action: #selector(toggleRequireModifierKey)
         )
         submenu.addItem(modifierItem)
 
-        // Modifier key options (only shown when enabled)
-        if preferences.requireModifierKey {
-            for keyType in ModifierKeyType.allCases {
-                let keyItem = NSMenuItem(
-                    title: "    \(keyType.displayName)", action: #selector(setModifierKeyType(_:)),
-                    keyEquivalent: "")
-                keyItem.target = self
-                keyItem.representedObject = keyType.rawValue
-                if preferences.modifierKeyType == keyType {
-                    keyItem.state = .on
-                }
-                submenu.addItem(keyItem)
-            }
+        // Modifier key options — always shown; enabled only when required.
+        for keyType in ModifierKeyType.allCases {
+            let keyItem = NSMenuItem(
+                title: "    \(keyType.displayName)", action: #selector(setModifierKeyType(_:)),
+                keyEquivalent: "")
+            keyItem.target = self
+            keyItem.representedObject = keyType.rawValue
+            submenu.addItem(
+                keepOpen(
+                    keyItem,
+                    checked: { [weak self] in self?.preferences.modifierKeyType == keyType },
+                    enabled: { [weak self] in self?.preferences.requireModifierKey ?? false }))
         }
 
         submenu.addItem(NSMenuItem.separator())
@@ -456,40 +465,55 @@ public class MenuBarController: NSObject {
         // Contact Size Filter section
         let contactSizeItem = createAdvancedMenuItem(
             title: "Filter Large Contacts",
-            isOn: preferences.contactSizeFilterEnabled,
+            checked: { [weak self] in self?.preferences.contactSizeFilterEnabled ?? false },
             action: #selector(toggleContactSizeFilter)
         )
         submenu.addItem(contactSizeItem)
 
-        // Contact size threshold options (only shown when enabled)
-        if preferences.contactSizeFilterEnabled {
-            let thresholds: [(String, Double)] = [
-                ("Strict (1.0)", 1.0),
-                ("Normal (1.5)", 1.5),
-                ("Lenient (2.0)", 2.0),
-            ]
-
-            for (title, value) in thresholds {
-                let thresholdItem = NSMenuItem(
-                    title: "    \(title)", action: #selector(setContactSizeThreshold(_:)),
-                    keyEquivalent: "")
-                thresholdItem.target = self
-                thresholdItem.representedObject = value
-                if abs(preferences.maxContactSize - value) < 0.01 {
-                    thresholdItem.state = .on
-                }
-                submenu.addItem(thresholdItem)
-            }
+        // Contact size threshold options — always shown; enabled only when filtering.
+        let contactThresholds: [(String, Double)] = [
+            ("Strict (1.0)", 1.0),
+            ("Normal (1.5)", 1.5),
+            ("Lenient (2.0)", 2.0),
+        ]
+        for (title, value) in contactThresholds {
+            let thresholdItem = NSMenuItem(
+                title: "    \(title)", action: #selector(setContactSizeThreshold(_:)),
+                keyEquivalent: "")
+            thresholdItem.target = self
+            thresholdItem.representedObject = value
+            submenu.addItem(
+                keepOpen(
+                    thresholdItem,
+                    checked: { [weak self] in abs((self?.preferences.maxContactSize ?? -1) - value) < 0.01 },
+                    enabled: { [weak self] in self?.preferences.contactSizeFilterEnabled ?? false }))
         }
 
         item.submenu = submenu
         return item
     }
 
-    private func createAdvancedMenuItem(title: String, isOn: Bool, action: Selector) -> NSMenuItem {
+    /// Build a boolean-toggle menu item that keeps the menu open when clicked.
+    /// `checked`/`enabled` are read live on every redraw.
+    private func createAdvancedMenuItem(
+        title: String,
+        checked: @escaping () -> Bool,
+        enabled: @escaping () -> Bool = { true },
+        action: Selector
+    ) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self  // IMPORTANT: Set target
-        item.state = isOn ? .on : .off
+        return keepOpen(item, checked: checked, enabled: enabled)
+    }
+
+    /// Attach a keep-open interactive view to an already-configured menu item.
+    @discardableResult
+    private func keepOpen(
+        _ item: NSMenuItem,
+        checked: @escaping () -> Bool,
+        enabled: @escaping () -> Bool = { true }
+    ) -> NSMenuItem {
+        item.view = InteractiveMenuItemView(item: item, checked: checked, enabled: enabled)
         return item
     }
 
@@ -510,12 +534,11 @@ public class MenuBarController: NSObject {
         multitouchManager?.toggleEnabled()
         let isEnabled = multitouchManager?.isEnabled ?? false
 
-        if let item = statusItem.menu?.item(withTag: MenuItemTag.enabled.rawValue) {
-            item.state = isEnabled ? .on : .off
-        }
-
         updateStatusIcon(enabled: isEnabled)
-        buildMenu()  // Rebuild to update status text
+        // Rebuild so the status line ("MiddleDrag Active/Disabled" — a plain item that
+        // does not live-refresh) is correct the next time the menu opens. The interactive
+        // rows in the currently-open menu update in place via InteractiveMenuItemView.
+        buildMenu()
     }
 
     @objc func toggleMiddleDrag() {
@@ -524,10 +547,6 @@ public class MenuBarController: NSObject {
         var config = multitouchManager?.configuration ?? GestureConfiguration()
         config.middleDragEnabled = preferences.middleDragEnabled
         multitouchManager?.updateConfiguration(config)
-
-        if let item = statusItem.menu?.item(withTag: MenuItemTag.middleDrag.rawValue) {
-            item.state = preferences.middleDragEnabled ? .on : .off
-        }
 
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
@@ -539,24 +558,14 @@ public class MenuBarController: NSObject {
         config.tapToClickEnabled = preferences.tapToClickEnabled
         multitouchManager?.updateConfiguration(config)
 
-        if let item = statusItem.menu?.item(withTag: MenuItemTag.tapToClick.rawValue) {
-            item.state = preferences.tapToClickEnabled ? .on : .off
-        }
-
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
     @objc func setSensitivity(_ sender: NSMenuItem) {
         guard let value = sender.representedObject as? Float else { return }
 
-        // Update UI
-        if let menu = unsafe sender.menu {
-            for item in menu.items {
-                item.state = item == sender ? .on : .off
-            }
-        }
-
-        // Update preferences and manager
+        // Update preferences and manager. The radio checkmark is drawn from the row's
+        // `checked` closure and refreshed in place by InteractiveMenuItemView.mouseUp.
         preferences.dragSensitivity = Double(value)
         multitouchManager?.configuration.sensitivity = value
 
@@ -639,13 +648,33 @@ public class MenuBarController: NSObject {
 
     @objc func toggleExclusionZone() {
         preferences.exclusionZoneEnabled.toggle()
+        applyExclusionZoneConfig()
+    }
 
+    @objc func toggleExcludeBottomEdge() {
+        preferences.excludeBottomEdge.toggle()
+        applyExclusionZoneConfig()
+    }
+
+    @objc func toggleExcludeLeftEdge() {
+        preferences.excludeLeftEdge.toggle()
+        applyExclusionZoneConfig()
+    }
+
+    @objc func toggleExcludeRightEdge() {
+        preferences.excludeRightEdge.toggle()
+        applyExclusionZoneConfig()
+    }
+
+    /// Push the full edge-exclusion configuration to the manager and refresh.
+    private func applyExclusionZoneConfig() {
         var config = multitouchManager?.configuration ?? GestureConfiguration()
         config.exclusionZoneEnabled = preferences.exclusionZoneEnabled
         config.exclusionZoneSize = Float(preferences.exclusionZoneSize)
+        config.excludeBottomEdge = preferences.excludeBottomEdge
+        config.excludeLeftEdge = preferences.excludeLeftEdge
+        config.excludeRightEdge = preferences.excludeRightEdge
         multitouchManager?.updateConfiguration(config)
-
-        buildMenu()
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
@@ -657,8 +686,6 @@ public class MenuBarController: NSObject {
         var config = multitouchManager?.configuration ?? GestureConfiguration()
         config.exclusionZoneSize = Float(value)
         multitouchManager?.updateConfiguration(config)
-
-        buildMenu()
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
@@ -669,8 +696,6 @@ public class MenuBarController: NSObject {
         config.requireModifierKey = preferences.requireModifierKey
         config.modifierKeyType = preferences.modifierKeyType
         multitouchManager?.updateConfiguration(config)
-
-        buildMenu()
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
@@ -684,8 +709,6 @@ public class MenuBarController: NSObject {
         var config = multitouchManager?.configuration ?? GestureConfiguration()
         config.modifierKeyType = keyType
         multitouchManager?.updateConfiguration(config)
-
-        buildMenu()
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
@@ -696,8 +719,6 @@ public class MenuBarController: NSObject {
         config.contactSizeFilterEnabled = preferences.contactSizeFilterEnabled
         config.maxContactSize = Float(preferences.maxContactSize)
         multitouchManager?.updateConfiguration(config)
-
-        buildMenu()
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
@@ -709,8 +730,6 @@ public class MenuBarController: NSObject {
         var config = multitouchManager?.configuration ?? GestureConfiguration()
         config.maxContactSize = Float(value)
         multitouchManager?.updateConfiguration(config)
-
-        buildMenu()
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
@@ -722,8 +741,6 @@ public class MenuBarController: NSObject {
         config.minimumWindowWidth = CGFloat(preferences.minimumWindowWidth)
         config.minimumWindowHeight = CGFloat(preferences.minimumWindowHeight)
         multitouchManager?.updateConfiguration(config)
-
-        buildMenu()
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
@@ -738,8 +755,6 @@ public class MenuBarController: NSObject {
         config.minimumWindowWidth = CGFloat(value)
         config.minimumWindowHeight = CGFloat(value)
         multitouchManager?.updateConfiguration(config)
-
-        buildMenu()
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
@@ -749,8 +764,6 @@ public class MenuBarController: NSObject {
         var config = multitouchManager?.configuration ?? GestureConfiguration()
         config.ignoreDesktop = preferences.ignoreDesktop
         multitouchManager?.updateConfiguration(config)
-
-        buildMenu()
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
@@ -761,8 +774,6 @@ public class MenuBarController: NSObject {
         config.passThroughTitleBar = preferences.passThroughTitleBar
         config.titleBarHeight = CGFloat(preferences.titleBarHeight)
         multitouchManager?.updateConfiguration(config)
-
-        buildMenu()
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
@@ -772,8 +783,6 @@ public class MenuBarController: NSObject {
         var config = multitouchManager?.configuration ?? GestureConfiguration()
         config.passThroughVerticalSwipes = preferences.passThroughVerticalSwipes
         multitouchManager?.updateConfiguration(config)
-
-        buildMenu()
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
@@ -783,8 +792,6 @@ public class MenuBarController: NSObject {
         var config = multitouchManager?.configuration ?? GestureConfiguration()
         config.passThroughAltTab = preferences.passThroughAltTab
         multitouchManager?.updateConfiguration(config)
-
-        buildMenu()
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
 
@@ -794,8 +801,6 @@ public class MenuBarController: NSObject {
         var config = multitouchManager?.configuration ?? GestureConfiguration()
         config.allowReliftDuringDrag = preferences.allowReliftDuringDrag
         multitouchManager?.updateConfiguration(config)
-
-        buildMenu()
         NotificationCenter.default.post(name: .preferencesChanged, object: preferences)
     }
     
@@ -830,10 +835,7 @@ public class MenuBarController: NSObject {
 
     @objc func toggleLaunchAtLogin() {
         preferences.launchAtLogin.toggle()
-
-        if let item = statusItem.menu?.item(withTag: MenuItemTag.launchAtLogin.rawValue) {
-            item.state = preferences.launchAtLogin ? .on : .off
-        }
+        // Checkmark refreshes in place via InteractiveMenuItemView.mouseUp.
 
         NotificationCenter.default.post(
             name: .launchAtLoginChanged, object: preferences.launchAtLogin)
@@ -846,17 +848,17 @@ public class MenuBarController: NSObject {
 
     @objc func toggleAutoUpdate() {
         UpdateManager.shared.automaticallyChecksForUpdates.toggle()
-        buildMenu()  // Rebuild to update checkmark
+        // Checkmark refreshes in place via InteractiveMenuItemView.mouseUp.
     }
 
     @objc func toggleCrashReporting() {
         CrashReporter.shared.isEnabled.toggle()
-        buildMenu()  // Rebuild to update checkmark
+        // Checkmark refreshes in place via InteractiveMenuItemView.mouseUp.
     }
 
     @objc func togglePerformanceMonitoring() {
         CrashReporter.shared.performanceMonitoringEnabled.toggle()
-        buildMenu()  // Rebuild to update checkmark
+        // Checkmark refreshes in place via InteractiveMenuItemView.mouseUp.
     }
 
     @objc private func showAbout() {
@@ -905,6 +907,101 @@ public class MenuBarController: NSObject {
                 button.performClick(nil)
             }
         }
+    }
+}
+
+// MARK: - Interactive (keep-open) menu item
+
+/// A menu-item view that performs its item's action on click WITHOUT dismissing the
+/// menu, so toggles and option pickers can be changed several times in a row. The
+/// checkmark and enabled state are read through closures on every redraw, so when one
+/// row changes a value the whole menu can be refreshed in place (no rebuild needed).
+final class InteractiveMenuItemView: NSView {
+    private weak var item: NSMenuItem?
+    private let isChecked: () -> Bool
+    private let isRowEnabled: () -> Bool
+    private var hovered = false
+
+    // Title and its measured size are fixed for the view's lifetime (the menu is rebuilt
+    // when any title changes), so measure once in init rather than on every draw.
+    private let title: String
+    private let titleSize: NSSize
+
+    private static let font = NSFont.menuFont(ofSize: 0)
+    private static let rowHeight: CGFloat = 22
+    private static let checkX: CGFloat = 7
+    private static let textX: CGFloat = 22
+    private static let rightPad: CGFloat = 26
+    private static let minWidth: CGFloat = 210
+
+    init(item: NSMenuItem, checked: @escaping () -> Bool, enabled: @escaping () -> Bool) {
+        self.item = item
+        self.isChecked = checked
+        self.isRowEnabled = enabled
+        let title = item.title
+        let titleSize = (title as NSString).size(withAttributes: [.font: Self.font])
+        self.title = title
+        self.titleSize = titleSize
+        super.init(
+            frame: NSRect(
+                x: 0, y: 0,
+                width: max(Self.minWidth, Self.textX + ceil(titleSize.width) + Self.rightPad),
+                height: Self.rowHeight))
+        // Let AppKit stretch the row to the full menu width so the highlight fills it.
+        autoresizingMask = [.width]
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let enabled = isRowEnabled()
+
+        if hovered && enabled {
+            NSColor.selectedContentBackgroundColor.setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 5, dy: 1), xRadius: 5, yRadius: 5).fill()
+        }
+
+        let textColor: NSColor =
+            !enabled ? .disabledControlTextColor : (hovered ? .selectedMenuItemTextColor : .labelColor)
+        let attrs: [NSAttributedString.Key: Any] = [.font: Self.font, .foregroundColor: textColor]
+        let y = (bounds.height - titleSize.height) / 2
+
+        if isChecked() {
+            ("✓" as NSString).draw(at: NSPoint(x: Self.checkX, y: y), withAttributes: attrs)
+        }
+        (title as NSString).draw(at: NSPoint(x: Self.textX, y: y), withAttributes: attrs)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard isRowEnabled(), let item = item, let action = item.action else { return }
+        NSApp.sendAction(action, to: item.target, from: item)
+        // Refresh every interactive row in this menu so radio selection and
+        // parent-dependent enabled state update live, without closing the menu.
+        if let siblings = item.menu?.items {
+            for sibling in siblings {
+                (sibling.view as? InteractiveMenuItemView)?.needsDisplay = true
+            }
+        }
+        needsDisplay = true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(
+            NSTrackingArea(
+                rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hovered = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovered = false
+        needsDisplay = true
     }
 }
 

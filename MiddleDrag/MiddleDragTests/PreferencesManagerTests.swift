@@ -32,20 +32,23 @@ final class PreferencesManagerTests: XCTestCase {
         // Load preferences from fresh UserDefaults - should return defaults
         let prefs = preferencesManager.loadPreferences()
 
-        XCTAssertFalse(prefs.launchAtLogin)
+        XCTAssertTrue(prefs.launchAtLogin)  // Launch at login on by default
         XCTAssertEqual(prefs.dragSensitivity, 1.0, accuracy: 0.001)
         XCTAssertEqual(prefs.tapThreshold, 0.15, accuracy: 0.001)
         XCTAssertEqual(prefs.smoothingFactor, 0.3, accuracy: 0.001)
         XCTAssertFalse(prefs.blockSystemGestures)
-        XCTAssertTrue(prefs.middleDragEnabled)
+        XCTAssertFalse(prefs.middleDragEnabled)  // Drag off by default
     }
 
     func testLoadPreferencesPalmRejectionDefaults() {
         // Load preferences from fresh UserDefaults - should return defaults
         let prefs = preferencesManager.loadPreferences()
 
-        XCTAssertFalse(prefs.exclusionZoneEnabled)
-        XCTAssertEqual(prefs.exclusionZoneSize, 0.15, accuracy: 0.001)
+        XCTAssertTrue(prefs.exclusionZoneEnabled)
+        XCTAssertEqual(prefs.exclusionZoneSize, 0.05, accuracy: 0.001)
+        XCTAssertTrue(prefs.excludeBottomEdge)
+        XCTAssertTrue(prefs.excludeLeftEdge)
+        XCTAssertTrue(prefs.excludeRightEdge)
         XCTAssertFalse(prefs.requireModifierKey)
         XCTAssertEqual(prefs.modifierKeyType, .shift)
         XCTAssertTrue(prefs.contactSizeFilterEnabled)
@@ -78,6 +81,9 @@ final class PreferencesManagerTests: XCTestCase {
         var prefs = UserPreferences()
         prefs.exclusionZoneEnabled = true
         prefs.exclusionZoneSize = 0.25
+        prefs.excludeBottomEdge = false
+        prefs.excludeLeftEdge = true
+        prefs.excludeRightEdge = false
         prefs.requireModifierKey = true
         prefs.modifierKeyType = .option
         prefs.contactSizeFilterEnabled = true
@@ -88,6 +94,9 @@ final class PreferencesManagerTests: XCTestCase {
 
         XCTAssertTrue(loaded.exclusionZoneEnabled)
         XCTAssertEqual(loaded.exclusionZoneSize, 0.25, accuracy: 0.001)
+        XCTAssertFalse(loaded.excludeBottomEdge)
+        XCTAssertTrue(loaded.excludeLeftEdge)
+        XCTAssertFalse(loaded.excludeRightEdge)
         XCTAssertTrue(loaded.requireModifierKey)
         XCTAssertEqual(loaded.modifierKeyType, .option)
         XCTAssertTrue(loaded.contactSizeFilterEnabled)

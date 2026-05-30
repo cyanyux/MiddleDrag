@@ -1213,8 +1213,14 @@ extension MultitouchManager: DeviceMonitorDelegate {
 
         let touchCount = Int(count)
         let config = configuration
+        // This count feeds force-click gating (hasStableThreeFingerContact), whose only
+        // consumer converts a physical click into a middle click — a gesture-*start*
+        // scenario that is explicitly disabled during an active drag. So we always apply
+        // palm rejection (gesture-start semantics) here; the recognizer's mid-drag freeze
+        // does not apply because force-click never fires while dragging.
         let validFingerCount = unsafe GestureRecognizer.validFingerPositions(
-            from: touches, count: touchCount, configuration: config
+            from: touches, count: touchCount, configuration: config,
+            applyPalmRejection: true
         ).count
         recordValidFingerCount(validFingerCount)
 

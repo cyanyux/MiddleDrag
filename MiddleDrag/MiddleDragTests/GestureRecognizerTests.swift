@@ -236,6 +236,117 @@ final class GestureRecognizerTests: XCTestCase {
             "Gesture should start with low Y touches when exclusion zone is disabled")
     }
 
+    func testExclusionZone_FiltersLeftEdgeContacts() {
+        recognizer.configuration.exclusionZoneEnabled = true
+        recognizer.configuration.exclusionZoneSize = 0.1  // 10% band
+        recognizer.configuration.excludeLeftEdge = true
+
+        // One contact starts in the left edge band (x < 0.1) — a side-of-hand rest.
+        // Filtering it leaves only 2 valid fingers, so no gesture starts.
+        let touches = [
+            createTouch(x: 0.05, y: 0.5),  // Filtered (left edge)
+            createTouch(x: 0.5, y: 0.5),
+            createTouch(x: 0.7, y: 0.5),
+        ]
+        let (pointer, count, cleanup) = unsafe createTouchData(touches: touches)
+        defer { cleanup() }
+
+        unsafe recognizer.processTouches(pointer, count: count, timestamp: 0.0, modifierFlags: [])
+
+        XCTAssertFalse(
+            mockDelegate.didStartCalled,
+            "Left-edge contact should be rejected, leaving too few fingers to start")
+    }
+
+    func testExclusionZone_FiltersRightEdgeContacts() {
+        recognizer.configuration.exclusionZoneEnabled = true
+        recognizer.configuration.exclusionZoneSize = 0.1
+        recognizer.configuration.excludeRightEdge = true
+
+        // One contact starts in the right edge band (x > 0.9).
+        let touches = [
+            createTouch(x: 0.3, y: 0.5),
+            createTouch(x: 0.5, y: 0.5),
+            createTouch(x: 0.95, y: 0.5),  // Filtered (right edge)
+        ]
+        let (pointer, count, cleanup) = unsafe createTouchData(touches: touches)
+        defer { cleanup() }
+
+        unsafe recognizer.processTouches(pointer, count: count, timestamp: 0.0, modifierFlags: [])
+
+        XCTAssertFalse(
+            mockDelegate.didStartCalled,
+            "Right-edge contact should be rejected, leaving too few fingers to start")
+    }
+
+    func testExclusionZone_TopEdgeNeverExcluded() {
+        recognizer.configuration.exclusionZoneEnabled = true
+        recognizer.configuration.exclusionZoneSize = 0.1
+
+        // All three fingers near the TOP edge (high y). The top edge is the
+        // finger-reach region and must never be excluded.
+        let touches = [
+            createTouch(x: 0.3, y: 0.97),
+            createTouch(x: 0.5, y: 0.95),
+            createTouch(x: 0.7, y: 0.98),
+        ]
+        let (pointer, count, cleanup) = unsafe createTouchData(touches: touches)
+        defer { cleanup() }
+
+        unsafe recognizer.processTouches(pointer, count: count, timestamp: 0.0, modifierFlags: [])
+
+        XCTAssertTrue(
+            mockDelegate.didStartCalled,
+            "Top-edge contacts must not be excluded — gesture should start")
+    }
+
+    func testExclusionZone_FrozenDuringDrag_FingerEnteringBandDoesNotEndGesture() {
+        recognizer.configuration.exclusionZoneEnabled = true
+        recognizer.configuration.exclusionZoneSize = 0.1
+        recognizer.configuration.moveThreshold = 0.01
+
+        // Start a clean 3-finger drag away from any edge.
+        let start = [
+            createTouch(x: 0.3, y: 0.5),
+            createTouch(x: 0.5, y: 0.5),
+            createTouch(x: 0.7, y: 0.5),
+        ]
+        let (p1, c1, cl1) = unsafe createTouchData(touches: start)
+        defer { cl1() }
+        unsafe recognizer.processTouches(p1, count: c1, timestamp: 0.0, modifierFlags: [])
+
+        let moved = [
+            createTouch(x: 0.32, y: 0.52),
+            createTouch(x: 0.52, y: 0.52),
+            createTouch(x: 0.72, y: 0.52),
+        ]
+        let (p2, c2, cl2) = unsafe createTouchData(touches: moved)
+        defer { cl2() }
+        unsafe recognizer.processTouches(p2, count: c2, timestamp: 0.1, modifierFlags: [])
+        XCTAssertEqual(recognizer.state, .dragging, "Precondition: drag should be active")
+
+        // Now one finger drifts deep into the left edge band over two frames.
+        // Because palm rejection is frozen during a drag, it must NOT be dropped —
+        // the gesture stays a 3-finger drag rather than ending.
+        for (i, t) in [0.2, 0.3].enumerated() {
+            let edge = [
+                createTouch(x: 0.02, y: 0.52),  // inside left band
+                createTouch(x: Float(0.52 + Double(i) * 0.01), y: 0.52),
+                createTouch(x: Float(0.72 + Double(i) * 0.01), y: 0.52),
+            ]
+            let (p, c, cl) = unsafe createTouchData(touches: edge)
+            defer { cl() }
+            unsafe recognizer.processTouches(p, count: c, timestamp: t, modifierFlags: [])
+        }
+
+        XCTAssertEqual(
+            recognizer.state, .dragging,
+            "A finger entering an edge band mid-drag must not drop out (rejection frozen)")
+        XCTAssertFalse(
+            mockDelegate.didEndDraggingCalled,
+            "Drag should not end when a finger crosses into an edge band")
+    }
+
     // MARK: - Contact Size Filter Tests
 
     func testContactSizeFilter_FiltersLargeContacts() {

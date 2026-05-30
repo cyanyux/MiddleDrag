@@ -21,6 +21,9 @@ public final class PreferencesManager: @unchecked Sendable {
         // Palm rejection keys
         static let exclusionZoneEnabled = "exclusionZoneEnabled"
         static let exclusionZoneSize = "exclusionZoneSize"
+        static let excludeBottomEdge = "excludeBottomEdge"
+        static let excludeLeftEdge = "excludeLeftEdge"
+        static let excludeRightEdge = "excludeRightEdge"
         static let requireModifierKey = "requireModifierKey"
         static let modifierKeyType = "modifierKeyType"
         static let contactSizeFilterEnabled = "contactSizeFilterEnabled"
@@ -64,16 +67,19 @@ public final class PreferencesManager: @unchecked Sendable {
     /// Register default values
     private func registerDefaults() {
         userDefaults.register(defaults: [
-            Keys.launchAtLogin: false,
+            Keys.launchAtLogin: true,
             Keys.dragSensitivity: 1.0,
             Keys.tapThreshold: 0.15,
             Keys.smoothingFactor: 0.3,
             Keys.blockSystemGestures: false,
-            Keys.middleDragEnabled: true,
+            Keys.middleDragEnabled: false,
             Keys.tapToClickEnabled: true,
             // Palm rejection defaults
-            Keys.exclusionZoneEnabled: false,
-            Keys.exclusionZoneSize: 0.15,
+            Keys.exclusionZoneEnabled: true,
+            Keys.exclusionZoneSize: 0.05,
+            Keys.excludeBottomEdge: true,
+            Keys.excludeLeftEdge: true,
+            Keys.excludeRightEdge: true,
             Keys.requireModifierKey: false,
             Keys.modifierKeyType: ModifierKeyType.shift.rawValue,
             Keys.contactSizeFilterEnabled: true,
@@ -123,6 +129,9 @@ public final class PreferencesManager: @unchecked Sendable {
         prefs.tapToClickEnabled = userDefaults.bool(forKey: Keys.tapToClickEnabled)
         prefs.exclusionZoneEnabled = userDefaults.bool(forKey: Keys.exclusionZoneEnabled)
         prefs.exclusionZoneSize = userDefaults.double(forKey: Keys.exclusionZoneSize)
+        prefs.excludeBottomEdge = userDefaults.bool(forKey: Keys.excludeBottomEdge)
+        prefs.excludeLeftEdge = userDefaults.bool(forKey: Keys.excludeLeftEdge)
+        prefs.excludeRightEdge = userDefaults.bool(forKey: Keys.excludeRightEdge)
         prefs.requireModifierKey = userDefaults.bool(forKey: Keys.requireModifierKey)
         prefs.modifierKeyType = modifierKey
         prefs.contactSizeFilterEnabled = userDefaults.bool(forKey: Keys.contactSizeFilterEnabled)
@@ -162,6 +171,9 @@ public final class PreferencesManager: @unchecked Sendable {
         // Palm rejection
         userDefaults.set(preferences.exclusionZoneEnabled, forKey: Keys.exclusionZoneEnabled)
         userDefaults.set(preferences.exclusionZoneSize, forKey: Keys.exclusionZoneSize)
+        userDefaults.set(preferences.excludeBottomEdge, forKey: Keys.excludeBottomEdge)
+        userDefaults.set(preferences.excludeLeftEdge, forKey: Keys.excludeLeftEdge)
+        userDefaults.set(preferences.excludeRightEdge, forKey: Keys.excludeRightEdge)
         userDefaults.set(preferences.requireModifierKey, forKey: Keys.requireModifierKey)
         userDefaults.set(preferences.modifierKeyType.rawValue, forKey: Keys.modifierKeyType)
         userDefaults.set(

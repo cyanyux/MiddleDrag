@@ -2,7 +2,7 @@ import Foundation
 import Sparkle
 
 /// Manages app updates via Sparkle framework
-/// Offline by default - only checks for updates when explicitly enabled by user
+/// Automatic checks are on by default; the user can disable them from the menu.
 /// Thread-safety: All mutable state is isolated to @MainActor to prevent data races
 @MainActor
 public final class UpdateManager: NSObject {
@@ -28,14 +28,14 @@ public final class UpdateManager: NSObject {
 
     // MARK: - Public Properties
 
-    /// Whether automatic update checks are enabled (opt-in, default false)
+    /// Whether automatic update checks are enabled (default true)
     var automaticallyChecksForUpdates: Bool {
         get {
-            // Default to false (offline by default)
-            UserDefaults.standard.object(forKey: Keys.automaticallyChecksForUpdates) as? Bool ?? false
+            // Default to true (check for updates automatically out of the box)
+            UserDefaults.standard.object(forKey: Keys.automaticallyChecksForUpdates) as? Bool ?? true
         }
         set {
-            let previousValue = UserDefaults.standard.object(forKey: Keys.automaticallyChecksForUpdates) as? Bool ?? false
+            let previousValue = UserDefaults.standard.object(forKey: Keys.automaticallyChecksForUpdates) as? Bool ?? true
 
             UserDefaults.standard.set(newValue, forKey: Keys.automaticallyChecksForUpdates)
             
@@ -95,12 +95,12 @@ public final class UpdateManager: NSObject {
             userDriverDelegate: nil
         )
 
-        // Configure based on user preference (default: no automatic checks)
+        // Configure based on user preference (default: automatic checks on)
         if let updater = updaterController?.updater {
             updater.automaticallyChecksForUpdates = automaticallyChecksForUpdates
 
-            // Only start the updater if user has opted in to automatic checks
-            // Otherwise, it will only check when user manually triggers it
+            // Start the updater when automatic checks are enabled (the default).
+            // When disabled, it only runs on a manual "Check for Updates…".
             if automaticallyChecksForUpdates {
                 // Defer the start slightly to avoid blocking
                 Task { @MainActor [weak self] in

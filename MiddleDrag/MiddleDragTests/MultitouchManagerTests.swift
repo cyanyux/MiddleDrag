@@ -4,6 +4,14 @@ import XCTest
 
 final class MultitouchManagerTests: XCTestCase {
 
+    /// Middle drag is OFF by default in the product; drag-lifecycle tests must
+    /// enable it explicitly before driving begin/end-dragging callbacks.
+    private func enableMiddleDrag(_ manager: MultitouchManager) {
+        var config = manager.configuration
+        config.middleDragEnabled = true
+        manager.updateConfiguration(config)
+    }
+
     private func requireCGEventTestsEnabled() throws {
         if ProcessInfo.processInfo.environment["RUN_CGEVENT_TESTS"] == "0" {
             throw XCTSkip("Skipping CGEvent-based tests; set RUN_CGEVENT_TESTS=1 to run.")
@@ -1045,6 +1053,7 @@ final class MultitouchManagerTests: XCTestCase {
         let manager = MultitouchManager(
             deviceProviderFactory: { unsafe mockDevice }, eventTapSetup: { true })
         let recognizer = GestureRecognizer()
+        enableMiddleDrag(manager)
 
         manager.start()
 
@@ -1110,6 +1119,7 @@ final class MultitouchManagerTests: XCTestCase {
         let manager = MultitouchManager(
             deviceProviderFactory: { unsafe mockDevice }, eventTapSetup: { true })
         let recognizer = GestureRecognizer()
+        enableMiddleDrag(manager)
 
         manager.start()
 
@@ -1502,6 +1512,7 @@ final class MultitouchManagerTests: XCTestCase {
         let manager = MultitouchManager(
             deviceProviderFactory: { unsafe mockDevice }, eventTapSetup: { true })
         let recognizer = GestureRecognizer()
+        enableMiddleDrag(manager)
 
         manager.start()
         manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0.5, y: 0.5))
@@ -1528,6 +1539,7 @@ final class MultitouchManagerTests: XCTestCase {
         let manager = MultitouchManager(
             deviceProviderFactory: { unsafe mockDevice }, eventTapSetup: { true })
         let recognizer = GestureRecognizer()
+        enableMiddleDrag(manager)
 
         manager.start()
         manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0.5, y: 0.5))
@@ -2304,6 +2316,7 @@ final class MultitouchManagerTests: XCTestCase {
                 appCheckCount += 1
                 return altTabVisible
             })
+        enableMiddleDrag(manager)
 
         let recognizer = GestureRecognizer()
         manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
@@ -2755,6 +2768,7 @@ final class MultitouchManagerTests: XCTestCase {
             deviceProviderFactory: { unsafe mockDevice },
             eventTapSetup: { true },
             appPassthroughCheck: { altTabVisible })
+        enableMiddleDrag(manager)
 
         let recognizer = GestureRecognizer()
         manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
@@ -2799,6 +2813,7 @@ final class MultitouchManagerTests: XCTestCase {
         let manager = MultitouchManager(
             deviceProviderFactory: { unsafe mockDevice },
             eventTapSetup: { true })
+        enableMiddleDrag(manager)
 
         manager.setTitleBarPassthroughForTesting()
         manager.gestureRecognizerDidEndDragging(GestureRecognizer())
@@ -2830,6 +2845,7 @@ final class MultitouchManagerTests: XCTestCase {
             deviceProviderFactory: { unsafe mockDevice },
             eventTapSetup: { true },
             appPassthroughCheck: { altTabVisible })
+        enableMiddleDrag(manager)
 
         let recognizer = GestureRecognizer()
         manager.gestureRecognizerDidStart(recognizer, at: MTPoint(x: 0, y: 0))
@@ -2888,6 +2904,7 @@ final class MultitouchManagerTests: XCTestCase {
                 appCheckCount += 1
                 return false
             })
+        enableMiddleDrag(manager)
 
         let recognizer = GestureRecognizer()
         let gestureData = GestureData(
